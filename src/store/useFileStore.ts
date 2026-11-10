@@ -55,7 +55,23 @@ export const useFileStore = create<FileStore>((set) => ({
     set((state) => ({ currentPath: index === -1 ? [] : state.currentPath.slice(0, index + 1) })),
 
   deleteFile: (id) =>
-    set((state) => ({ files: state.files.filter(f => f.id !== id) })),
+    set((state) => {
+      // 级联收集当前节点及其所有深层子节点 ID
+      const idsToDelete = new Set<string>([id]);
+      let hasNewAddition = true;
+
+      while (hasNewAddition) {
+        hasNewAddition = false;
+        for (const file of state.files) {
+          if (file.parentId && idsToDelete.has(file.parentId) && !idsToDelete.has(file.id)) {
+            idsToDelete.add(file.id);
+            hasNewAddition = true;
+          }
+        }
+      }
+
+      return { files: state.files.filter((f) => !idsToDelete.has(f.id)) };
+    }),
 
   createFolder: (name, parentId) =>
     set((state) => {

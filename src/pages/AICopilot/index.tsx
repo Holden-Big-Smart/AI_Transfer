@@ -5,7 +5,7 @@ import {
   FolderOutput, CheckCircle2, Clock, Terminal, ChevronRight,
   Paperclip, X, Trash2, CheckSquare, Square, AlertCircle
 } from 'lucide-react';
-import { useChatStore, Message, AttachedFile } from '../../store/useChatStore';
+import { useChatStore, type Message, type AttachedFile } from '../../store/useChatStore';
 
 // 字节单位格式化
 const formatBytes = (bytes: number) => {
@@ -62,15 +62,7 @@ export default function AICopilot() {
     setAttachedFiles((prev) => prev.filter((f) => f.id !== id));
   };
 
-  // 快捷键监听：Enter 发送，Shift + Enter 换行
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSendMessage();
-    }
-  };
-
-  // 发送消息
+  // 1. 先定义发送消息
   const handleSendMessage = () => {
     if ((!inputText.trim() && attachedFiles.length === 0) || isThinking) return;
 
@@ -114,6 +106,14 @@ export default function AICopilot() {
       addMessage(aiResponse);
       setThinking(false);
     }, 1000);
+  };
+
+  // 2. 后定义快捷键监听：Enter 发送，Shift + Enter 换行
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSendMessage();
+    }
   };
 
   // 批量管理勾选切换

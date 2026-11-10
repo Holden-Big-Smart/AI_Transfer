@@ -3,7 +3,8 @@ import { useState, useRef } from 'react';
 import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts';
 import { 
   LogOut, UploadCloud, FolderPlus, Download, Trash2, Home, 
-  ChevronRight, X, CheckCircle2, Clock, HardDrive, FileUp, FolderUp 
+  ChevronRight, X, CheckCircle2, Clock, HardDrive, FileUp, FolderUp,
+  PieChart as PieChartIcon
 } from 'lucide-react';
 import { useFileStore } from '../../store/useFileStore';
 
@@ -192,11 +193,9 @@ export default function FileCenter() {
         type="file" 
         ref={folderInputRef} 
         multiple 
-        // @ts-expect-error webkitdirectory 是标准文件夹读取属性
-        webkitdirectory="" 
-        directory="" 
         className="hidden" 
         onChange={handleNativeFileSelect} 
+        {...({ webkitdirectory: '', directory: '' } as any)}
       />
 
       {/* 顶部导航 */}
@@ -281,7 +280,7 @@ export default function FileCenter() {
                     <div className="font-semibold text-gray-200">{formatBytes(totalStagedBytes)}</div>
                   </div>
                   <div>
-                    <div className="flex items-center gap-1 text-gray-500 mb-0.5"><PieChart size={11} /> 占分配空间</div>
+                    <div className="flex items-center gap-1 text-gray-500 mb-0.5"><PieChartIcon size={11} /> 占分配空间</div>
                     <div className="font-semibold text-yellow-400">{formatQuotaPercent(totalStagedBytes)}</div>
                   </div>
                   <div>

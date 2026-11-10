@@ -40,7 +40,7 @@ interface ChatStore {
   clearAllMessages: () => void;
 }
 
-export const useChatStore = create<ChatStore>((set, get) => ({
+export const useChatStore = create<ChatStore>((set) => ({
   messages: [
     {
       id: 'msg_init',
