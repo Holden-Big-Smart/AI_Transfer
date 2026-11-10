@@ -1,0 +1,14 @@
+/* src/index.css */
+@import "tailwindcss";
+
+@theme {
+  /* 可以在这里按需扩展品牌色，目前留空默认即可 */
+}
+
+/* 基础重置，确保全屏占满，消除滚动条闪烁 */
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background-color: #f3f4f6; /* Tailwind 的 gray-100 作为底层背景 */
+}
