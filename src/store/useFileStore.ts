@@ -1,5 +1,6 @@
 // src/store/useFileStore.ts
 import { create } from 'zustand';
+import { api } from '../utils/api';
 
 export interface FileNode {
   id: string;
@@ -11,6 +12,7 @@ export interface FileNode {
   ownerId: string;            // 归属者用户ID（'system' 为系统内置）
   isPublicFolder?: boolean;   // 是否属于公共空间分支
   sharedWith?: string[];      // 定向共享列表（用户ID数组，为空则公共内全员可见）
+  virtualPath?: string;       // 服务端真实虚拟路径
 }
 
 // 新增：操作审计日志接口
@@ -53,38 +55,27 @@ export interface FileStore {
   renameNode: (id: string, newName: string, operator?: { name: string; username: string }) => void;
   moveNode: (id: string, targetParentId: string | null, operator?: { name: string; username: string }) => void;
   updateFileShare: (id: string, sharedWithUserIds: string[]) => void; // 新增：更新指定共享
+  loadServerFiles: (isPublic: boolean, subPath?: string) => Promise<void>;
+  loadAuditLogs: () => Promise<void>;
   setClipboard: (item: { id: string; action: 'cut' | 'copy' } | null) => void;
   addTask: (task: UploadTask) => void;
   updateTaskProgress: (id: string, progress: number, status?: UploadTask['status']) => void;
   removeTask: (id: string) => void;
 }
 
-// 初始数据：包含一个常驻的系统公共共享根目录
-const initialFiles: FileNode[] = [
-  {
-    id: 'folder_public_root',
-    name: '📂 公共共享空间',
-    size: null,
-    isFolder: true,
-    uploadTime: '2026-11-10 12:00',
-    parentId: null,
-    ownerId: 'system',
-    isPublicFolder: true,
-  },
-  {
-    id: 'file_admin_sample',
-    name: '管理员私有备忘录.docx',
-    size: 15414000,
-    isFolder: false,
-    uploadTime: '2026-11-09 15:49',
-    parentId: null,
-    ownerId: 'u_admin',
-    isPublicFolder: false,
-  }
-];
-
-export const useFileStore = create<FileStore>((set) => ({
-  files: initialFiles,
+export const useFileStore = create<FileStore>((set, get) => ({
+  files: [
+    {
+      id: 'folder_public_root',
+      name: '📂 公共共享空间',
+      size: null,
+      isFolder: true,
+      uploadTime: '系统内置',
+      parentId: null,
+      ownerId: 'system',
+      isPublicFolder: true
+    }
+  ],
   currentPath: [],
   tasks: [],
   clipboard: null,
@@ -96,156 +87,108 @@ export const useFileStore = create<FileStore>((set) => ({
   goToBreadcrumb: (index) =>
     set((state) => ({ currentPath: index === -1 ? [] : state.currentPath.slice(0, index + 1) })),
 
-  createFolder: (name, parentId, ownerId, isPublic, operator) =>
-    set((state) => {
-      const newFolder: FileNode = {
-        id: `folder_${Date.now()}`,
-        name,
-        size: null,
-        isFolder: true,
-        uploadTime: new Date().toLocaleString('zh-CN', { hour12: false }),
-        parentId,
-        ownerId,
-        isPublicFolder: isPublic,
-      };
+  loadServerFiles: async (isPublic, subPath = '') => {
+    try {
+      const serverNodes = await api.files.list(isPublic, subPath);
+      set((state) => {
+        // 保留公共根节点，把服务端获取的真实节点并入
+        const filtered = state.files.filter(f => f.id === 'folder_public_root' || f.parentId !== (subPath ? (isPublic ? `pub_${subPath}` : `pri_${subPath}`) : (isPublic ? 'folder_public_root' : null)));
+        return { files: [...filtered, ...serverNodes] };
+      });
+    } catch (err) {
+      console.error('同步服务器文件失败', err);
+    }
+  },
 
-      const newLogs: OperationLog[] = isPublic && operator ? [
-        {
-          id: `log_${Date.now()}`,
-          time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
-          operatorName: operator.name,
-          operatorUsername: operator.username,
-          action: '创建文件夹',
-          targetName: name,
-          details: '在公共共享空间新建目录'
-        },
-        ...state.operationLogs
-      ] : state.operationLogs;
+  loadAuditLogs: async () => {
+    try {
+      const logs = await api.audit.getLogs();
+      const mapped = logs.map((l: Record<string, never> & {
+        id: string; timestamp: string; operator_name: string;
+        operator_username: string; action: OperationLog['action'];
+        target_name: string; details?: string;
+      }) => ({
+        id: l.id,
+        time: l.timestamp,
+        operatorName: l.operator_name,
+        operatorUsername: l.operator_username,
+        action: l.action,
+        targetName: l.target_name,
+        details: l.details
+      }));
+      set({ operationLogs: mapped });
+    } catch (err) {
+      console.error('获取审计日志失败', err);
+    }
+  },
 
-      return { files: [...state.files, newFolder], operationLogs: newLogs };
-    }),
+  createFolder: (name, parentId, _ownerId, isPublic) => {
+    // 乐观更新并在后台请求服务器
+    const virtualParent = parentId && parentId !== 'folder_public_root' ? parentId.replace(/^(pub_|pri_)/, '') : '';
+    api.files.createFolder(name, virtualParent, !!isPublic).then(() => {
+      get().loadServerFiles(!!isPublic, virtualParent);
+    });
+  },
 
-  addFile: (file, operator) =>
-    set((state) => {
-      const newLogs: OperationLog[] = file.isPublicFolder && operator ? [
-        {
-          id: `log_${Date.now()}`,
-          time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
-          operatorName: operator.name,
-          operatorUsername: operator.username,
-          action: '上传',
-          targetName: file.name,
-          details: file.sharedWith?.length ? `定向共享给 ${file.sharedWith.length} 人` : '全员可见'
-        },
-        ...state.operationLogs
-      ] : state.operationLogs;
+  addFile: (file) => {
+    set((state) => ({ files: [...state.files, file] }));
+  },
 
-      return { files: [...state.files, file], operationLogs: newLogs };
-    }),
+  deleteFile: (id) => {
+    const target = get().files.find(f => f.id === id);
+    if (!target || target.id === 'folder_public_root') return;
 
-  deleteFile: (id, operator) =>
-    set((state) => {
-      const target = state.files.find(f => f.id === id);
-      if (!target || target.id === 'folder_public_root') return state; // 系统根目录禁止删除
+    const virtualPath = target.virtualPath || target.name;
+    const isPublic = !!target.isPublicFolder;
 
-      const idsToDelete = new Set<string>([id]);
-      let hasNewAddition = true;
-      while (hasNewAddition) {
-        hasNewAddition = false;
-        for (const file of state.files) {
-          if (file.parentId && idsToDelete.has(file.parentId) && !idsToDelete.has(file.id)) {
-            idsToDelete.add(file.id);
-            hasNewAddition = true;
-          }
-        }
-      }
+    api.files.delete(virtualPath, isPublic).then(() => {
+      set((state) => ({ files: state.files.filter((f) => f.id !== id) }));
+    });
+  },
 
-      const newLogs: OperationLog[] = target.isPublicFolder && operator ? [
-        {
-          id: `log_${Date.now()}`,
-          time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
-          operatorName: operator.name,
-          operatorUsername: operator.username,
-          action: '删除',
-          targetName: target.name,
-          details: `级联移除了 ${idsToDelete.size} 个节点`
-        },
-        ...state.operationLogs
-      ] : state.operationLogs;
+  renameNode: (id, newName) => {
+    const target = get().files.find(f => f.id === id);
+    if (!target) return;
 
-      return {
-        files: state.files.filter((f) => !idsToDelete.has(f.id)),
-        operationLogs: newLogs
-      };
-    }),
+    const virtualPath = target.virtualPath || target.name;
+    const isPublic = !!target.isPublicFolder;
 
-  renameNode: (id, newName, operator) =>
-    set((state) => {
-      const target = state.files.find(f => f.id === id);
-      if (!target || target.id === 'folder_public_root') return state;
+    api.files.rename(virtualPath, newName, isPublic).then(() => {
+      set((state) => ({
+        files: state.files.map((f) => (f.id === id ? { ...f, name: newName } : f))
+      }));
+    });
+  },
 
-      const newLogs: OperationLog[] = target.isPublicFolder && operator ? [
-        {
-          id: `log_${Date.now()}`,
-          time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
-          operatorName: operator.name,
-          operatorUsername: operator.username,
-          action: '重命名',
-          targetName: `${target.name} ➔ ${newName}`,
-        },
-        ...state.operationLogs
-      ] : state.operationLogs;
+  moveNode: (id, targetParentId) => {
+    const target = get().files.find(f => f.id === id);
+    if (!target) return;
 
-      return {
-        files: state.files.map((f) => (f.id === id ? { ...f, name: newName } : f)),
-        operationLogs: newLogs
-      };
-    }),
+    const sourcePath = target.virtualPath || target.name;
+    const targetPath = targetParentId && targetParentId !== 'folder_public_root'
+      ? targetParentId.replace(/^(pub_|pri_)/, '')
+      : '';
+    const isPublic = !!target.isPublicFolder;
 
-  moveNode: (id, targetParentId, operator) =>
-    set((state) => {
-      const target = state.files.find(f => f.id === id);
-      if (!target || id === targetParentId) return state;
+    api.files.move(sourcePath, targetPath, isPublic).then(() => {
+      set((state) => ({
+        files: state.files.map((f) => (f.id === id ? { ...f, parentId: targetParentId } : f)),
+        clipboard: null
+      }));
+    });
+  },
 
-      // 防呆检测：禁止将父文件夹移入其自身的子目录中（防止死循环）
-      if (targetParentId) {
-        let currentAncestor: FileNode | undefined = state.files.find(f => f.id === targetParentId);
-        while (currentAncestor) {
-          if (currentAncestor.id === id) {
-            alert('操作无效：不能将文件夹移动到其自身的子文件夹中！');
-            return state;
-          }
-          currentAncestor = state.files.find(f => f.id === currentAncestor?.parentId);
-        }
-      }
+  updateFileShare: (id, sharedWithUserIds) => {
+    const target = get().files.find(f => f.id === id);
+    if (!target) return;
+    const virtualPath = target.virtualPath || target.name;
 
-      const targetParent = state.files.find(f => f.id === targetParentId);
-      const isNowPublic = targetParent ? !!targetParent.isPublicFolder : false;
-
-      const newLogs: OperationLog[] = (target.isPublicFolder || isNowPublic) && operator ? [
-        {
-          id: `log_${Date.now()}`,
-          time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
-          operatorName: operator.name,
-          operatorUsername: operator.username,
-          action: '移动',
-          targetName: target.name,
-          details: `移入目标目录 [${targetParent?.name || '根目录'}]`
-        },
-        ...state.operationLogs
-      ] : state.operationLogs;
-
-      return {
-        files: state.files.map((f) => (f.id === id ? { ...f, parentId: targetParentId, isPublicFolder: isNowPublic } : f)),
-        clipboard: null,
-        operationLogs: newLogs
-      };
-    }),
-
-  updateFileShare: (id, sharedWithUserIds) =>
-    set((state) => ({
-      files: state.files.map((f) => (f.id === id ? { ...f, sharedWith: sharedWithUserIds } : f))
-    })),
+    api.files.setShare(virtualPath, sharedWithUserIds).then(() => {
+      set((state) => ({
+        files: state.files.map((f) => (f.id === id ? { ...f, sharedWith: sharedWithUserIds } : f))
+      }));
+    });
+  },
 
   setClipboard: (item) => set({ clipboard: item }),
   addTask: (task) => set((state) => ({ tasks: [task, ...state.tasks] })),

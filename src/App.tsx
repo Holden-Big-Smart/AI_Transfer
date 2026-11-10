@@ -29,7 +29,7 @@ function App() {
     return <Login />;
   }
 
-  const handleSavePassword = () => {
+  const handleSavePassword = async () => {
     if (newPwd.length < 6) {
       setPwdError('密码不能少于 6 位');
       return;
@@ -38,12 +38,16 @@ function App() {
       setPwdError('两次输入密码不一致');
       return;
     }
-    changePassword(currentUser.id, newPwd);
-    setIsPwdModalOpen(false);
-    setNewPwd('');
-    setConfirmPwd('');
-    setPwdError('');
-    alert('密码修改成功！');
+    try {
+      await changePassword(newPwd);
+      setIsPwdModalOpen(false);
+      setNewPwd('');
+      setConfirmPwd('');
+      setPwdError('');
+      alert('密码修改成功！');
+    } catch (err) {
+      setPwdError(err instanceof Error ? err.message : '密码修改失败');
+    }
   };
 
   return (

@@ -17,11 +17,11 @@ export default function Login() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [passError, setPassError] = useState('');
 
-  const handleLoginSubmit = (e: React.FormEvent) => {
+  const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
 
-    const res = login(username, password);
+    const res = await login(username, password);
     if (!res.success) {
       setErrorMsg(res.message || '登录失败');
     } else if (res.mustChange) {
@@ -29,7 +29,7 @@ export default function Login() {
     }
   };
 
-  const handleSaveNewPassword = () => {
+  const handleSaveNewPassword = async () => {
     if (newPassword.length < 6) {
       setPassError('新密码长度不能少于 6 位');
       return;
@@ -44,8 +44,12 @@ export default function Login() {
     }
 
     if (currentUser) {
-      changePassword(currentUser.id, newPassword);
-      setIsChangingPass(false);
+      try {
+        await changePassword(newPassword);
+        setIsChangingPass(false);
+      } catch (err) {
+        setPassError(err instanceof Error ? err.message : '密码修改失败');
+      }
     }
   };
 

@@ -1,5 +1,5 @@
 // src/pages/UserManagement/index.tsx
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { 
   Users, UserPlus, Trash2, KeyRound, Copy, Check, 
   ShieldCheck, AlertTriangle, X, CheckSquare, Square 
@@ -9,7 +9,13 @@ import { useAuthStore, type UserAccount } from '../../store/useAuthStore';
 const ALL_PROJECTS = ['南方电网', 'Cyber_EcoTank', '通用公用库'];
 
 export default function UserManagement() {
-  const { users, currentUser, createUser, deleteUser } = useAuthStore();
+  const { users, currentUser, createUser, deleteUser, fetchUsers } = useAuthStore();
+
+  // 进入页面时从后端拉取真实用户列表
+  useEffect(() => {
+    if (currentUser?.role === 'admin') fetchUsers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.role]);
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [newUsername, setNewUsername] = useState('');
@@ -32,11 +38,11 @@ export default function UserManagement() {
     );
   }
 
-  const handleCreateSubmit = (e: React.FormEvent) => {
+  const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newUsername.trim()) return;
 
-    const { initialPass } = createUser(newUsername, newName, selectedProjects);
+    const { initialPass } = await createUser(newUsername, newName, selectedProjects);
     setIsAddModalOpen(false);
     setGeneratedResult({ username: newUsername, pass: initialPass });
     setNewUsername('');
@@ -291,8 +297,12 @@ export default function UserManagement() {
                 取消
               </button>
               <button
-                onClick={() => {
-                  deleteUser(deleteTarget.id);
+                onClick={async () => {
+                  try {
+                    await deleteUser(deleteTarget.id);
+                  } catch (err) {
+                    alert(err instanceof Error ? err.message : '删除失败');
+                  }
                   setDeleteTarget(null);
                 }}
                 className="px-3.5 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-medium"

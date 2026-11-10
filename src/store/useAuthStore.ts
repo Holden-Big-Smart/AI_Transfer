@@ -1,5 +1,6 @@
 // src/store/useAuthStore.ts
 import { create } from 'zustand';
+import { api } from '../utils/api';
 
 export type UserRole = 'admin' | 'user' | 'guest';
 
@@ -31,23 +32,14 @@ const DEFAULT_USERS: UserAccount[] = [
 interface AuthStore {
   users: UserAccount[];
   currentUser: UserAccount | null;
-
-  // 认证与会话动作
-  login: (username: string, password?: string) => { success: boolean; message?: string; mustChange?: boolean };
+  fetchUsers: () => Promise<void>;
+  login: (username: string, password: string) => Promise<{ success: boolean; message?: string; mustChange?: boolean }>;
   logout: () => void;
   guestLogin: () => void;
-
-  // 账户管理动作
-  createUser: (username: string, name: string, allowedProjects: string[]) => { user: UserAccount; initialPass: string };
-  deleteUser: (id: string) => void;
-  changePassword: (userId: string, newPass: string) => void;
+  createUser: (username: string, name: string, allowedProjects: string[]) => Promise<{ user: UserAccount; initialPass: string }>;
+  deleteUser: (id: string) => Promise<void>;
+  changePassword: (newPass: string) => Promise<void>;
 }
-
-// 读取本地存储中的用户列表，保证刷新不丢数据
-const getStoredUsers = (): UserAccount[] => {
-  const data = localStorage.getItem('app_user_accounts');
-  return data ? JSON.parse(data) : DEFAULT_USERS;
-};
 
 const getStoredCurrentUser = (): UserAccount | null => {
   const data = localStorage.getItem('app_current_user');
@@ -55,25 +47,28 @@ const getStoredCurrentUser = (): UserAccount | null => {
 };
 
 export const useAuthStore = create<AuthStore>((set, get) => ({
-  users: getStoredUsers(),
+  users: [],
   currentUser: getStoredCurrentUser(),
 
-  login: (username, password) => {
-    const user = get().users.find((u) => u.username === username);
-    if (!user) {
-      return { success: false, message: '账号不存在' };
+  fetchUsers: async () => {
+    try {
+      const data = await api.auth.getUsers();
+      set({ users: data });
+    } catch (err) {
+      console.error('获取用户列表失败', err);
     }
-    if (user.password !== password) {
-      return { success: false, message: '密码错误' };
-    }
+  },
 
-    set({ currentUser: user });
-    localStorage.setItem('app_current_user', JSON.stringify(user));
-
-    if (user.mustChangePassword) {
-      return { success: true, mustChange: true };
+  login: async (username, password) => {
+    try {
+      const res = await api.auth.login(username, password);
+      localStorage.setItem('access_token', res.access_token);
+      localStorage.setItem('app_current_user', JSON.stringify(res.user));
+      set({ currentUser: res.user });
+      return { success: true, mustChange: res.user.mustChangePassword };
+    } catch (err) {
+      return { success: false, message: err instanceof Error ? err.message : '登录异常' };
     }
-    return { success: true };
   },
 
   guestLogin: () => {
@@ -90,57 +85,29 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
   },
 
   logout: () => {
-    set({ currentUser: null });
+    localStorage.removeItem('access_token');
     localStorage.removeItem('app_current_user');
+    set({ currentUser: null });
   },
 
-  // 管理员创建用户，分配随机密码，标记首次改密
-  createUser: (username, name, allowedProjects) => {
-    // 生成 8 位包含大小写和数字的随机密码
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
-    let initialPass = '';
-    for (let i = 0; i < 8; i++) {
-      initialPass += chars.charAt(Math.floor(Math.random() * chars.length));
+  createUser: async (username, name, allowedProjects) => {
+    const res = await api.auth.createUser(username, name, allowedProjects);
+    set((state) => ({ users: [...state.users, res.user] }));
+    return { user: res.user, initialPass: res.initialPassword };
+  },
+
+  deleteUser: async (id) => {
+    await api.auth.deleteUser(id);
+    set((state) => ({ users: state.users.filter((u) => u.id !== id) }));
+  },
+
+  changePassword: async (newPass) => {
+    await api.auth.changePassword(newPass);
+    const curr = get().currentUser;
+    if (curr) {
+      const updated = { ...curr, mustChangePassword: false };
+      set({ currentUser: updated });
+      localStorage.setItem('app_current_user', JSON.stringify(updated));
     }
-
-    const newUser: UserAccount = {
-      id: `u_${Date.now()}`,
-      username: username.trim(),
-      name: name.trim() || username.trim(),
-      role: 'user',
-      password: initialPass,
-      mustChangePassword: true, // 核心逻辑：初次登录必须强制改密
-      allowedProjects: allowedProjects,
-      createdAt: new Date().toLocaleDateString('zh-CN'),
-    };
-
-    const updatedUsers = [...get().users, newUser];
-    set({ users: updatedUsers });
-    localStorage.setItem('app_user_accounts', JSON.stringify(updatedUsers));
-
-    return { user: newUser, initialPass };
-  },
-
-  deleteUser: (id) => {
-    const updatedUsers = get().users.filter((u) => u.id !== id);
-    set({ users: updatedUsers });
-    localStorage.setItem('app_user_accounts', JSON.stringify(updatedUsers));
-  },
-
-  changePassword: (userId, newPass) => {
-    const updatedUsers = get().users.map((u) =>
-      u.id === userId ? { ...u, password: newPass, mustChangePassword: false } : u
-    );
-
-    // 如果当前登录的就是该用户，同步更新状态
-    const updatedCurrentUser = get().currentUser?.id === userId
-      ? { ...get().currentUser!, password: newPass, mustChangePassword: false }
-      : get().currentUser;
-
-    set({ users: updatedUsers, currentUser: updatedCurrentUser });
-    localStorage.setItem('app_user_accounts', JSON.stringify(updatedUsers));
-    if (updatedCurrentUser) {
-      localStorage.setItem('app_current_user', JSON.stringify(updatedCurrentUser));
-    }
-  },
+  }
 }));

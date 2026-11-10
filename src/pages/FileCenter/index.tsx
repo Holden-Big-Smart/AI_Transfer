@@ -1,5 +1,6 @@
 // src/pages/FileCenter/index.tsx
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
+import { api } from '../../utils/api';
 import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts';
 import { 
   LogOut, UploadCloud, FolderPlus, Download, Trash2, Home, 
@@ -48,8 +49,9 @@ export default function FileCenter() {
     tasks = [], 
     clipboard, setClipboard, renameNode, moveNode,
     enterFolder, goToBreadcrumb, deleteFile, createFolder,
-    addFile, addTask, updateTaskProgress, removeTask,
-    operationLogs = [], updateFileShare
+    addTask, updateTaskProgress, removeTask,
+    operationLogs = [], updateFileShare,
+    loadServerFiles, loadAuditLogs
   } = useFileStore();
 
   // 审计日志抽屉状态 (仅 Admin 可见)
@@ -93,6 +95,18 @@ export default function FileCenter() {
     // 3. 如果在私有个人空间下：实现严格隔离（管理员也只能看到自己的私有文件）
     return file.ownerId === currentUser?.id;
   });
+
+  // 当路径切换或组件初次挂载时，从云端拉取真实文件与审计日志
+  useEffect(() => {
+    if (currentUser && currentUser.role !== 'guest') {
+      const virtualSubPath = currentFolderId && currentFolderId !== 'folder_public_root'
+        ? currentFolderId.replace(/^(pub_|pri_)/, '')
+        : '';
+      loadServerFiles(isInPublicSpace, virtualSubPath);
+      if (currentUser.role === 'admin') loadAuditLogs();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentFolderId, isInPublicSpace, currentUser]);
 
   // 模态弹窗与输入引用
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -164,56 +178,42 @@ export default function FileCenter() {
   };
 
   // 触发真实/模拟上传
-  const handleStartUpload = () => {
+  const handleStartUpload = async () => {
     if (stagedFiles.length === 0 || !currentUser) return;
 
-    stagedFiles.forEach((file) => {
-      const taskId = `task_${Date.now()}_${Math.random()}`;
-      
-      if (addTask) {
-        addTask({
-          id: taskId,
-          name: file.name,
-          size: file.size,
-          progress: 0,
-          status: 'uploading',
-          userId: currentUser.id // 新增：绑定当前用户
-        });
-      }
+    const virtualParent = currentFolderId && currentFolderId !== 'folder_public_root'
+      ? currentFolderId.replace(/^(pub_|pri_)/, '')
+      : '';
 
-      let currentProgress = 0;
-      const interval = setInterval(() => {
-        currentProgress += Math.floor(Math.random() * 20) + 15;
-        if (currentProgress >= 100) {
-          currentProgress = 100;
-          clearInterval(interval);
-          
-          if (updateTaskProgress) {
-            updateTaskProgress(taskId, 100, 'success');
-          }
-          
-          if (addFile) {
-            addFile({
-              id: `file_${Date.now()}_${Math.random()}`,
-              name: file.name,
-              size: file.size,
-              isFolder: false,
-              uploadTime: new Date().toLocaleString('zh-CN', { hour12: false }),
-              parentId: currentFolderId,
-              ownerId: currentUser.id,
-              isPublicFolder: isInPublicSpace,
-              sharedWith: [] // 初始默认公共全员可见，可在列表再次指定
-            }, { name: currentUser.name, username: currentUser.username });
-          }
-        } else {
-          if (updateTaskProgress) {
-            updateTaskProgress(taskId, currentProgress);
-          }
-        }
-      }, 400);
+    // 遍历待上传文件列表执行真实切片上传
+    stagedFiles.forEach(async (file) => {
+      const taskId = `task_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      addTask({
+        id: taskId,
+        name: file.name,
+        size: file.size,
+        progress: 0,
+        status: 'uploading',
+        userId: currentUser.id
+      });
+
+      try {
+        await api.files.uploadFileWithChunks(
+          file,
+          virtualParent,
+          isInPublicSpace,
+          (percent) => updateTaskProgress(taskId, percent)
+        );
+        updateTaskProgress(taskId, 100, 'success');
+        // 成功后重新拉取当前目录，获取服务器落盘后的真实节点
+        loadServerFiles(isInPublicSpace, virtualParent);
+      } catch (err) {
+        console.error('上传失败', err);
+        updateTaskProgress(taskId, 0, 'error');
+        alert(`文件 [${file.name}] 上传失败: ${err instanceof Error ? err.message : '未知错误'}`);
+      }
     });
 
-    // 提交上传后清空暂存区
     setStagedFiles([]);
   };
 
@@ -555,7 +555,14 @@ export default function FileCenter() {
                   <div className="col-span-2 text-gray-400">{formatBytes(file.size)}</div>
                   <div className="col-span-2 text-gray-500">{file.uploadTime}</div>
                   <div className="col-span-2 text-right opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-end gap-2">
-                    <button className="text-blue-400 hover:text-blue-300" title="下载">
+                    <button 
+                      onClick={() => {
+                        const virtualPath = file.virtualPath || file.name;
+                        window.open(api.files.getDownloadUrl(virtualPath, isInPublicSpace), '_blank');
+                      }} 
+                      className="text-blue-400 hover:text-blue-300" 
+                      title="下载文件"
+                    >
                       <Download size={14} />
                     </button>
 
