@@ -190,38 +190,76 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       };
     }),
 
+  // 单条删除：自动寻找关联的上一条/下一条进行成对清除，并同步刷新记忆
   deleteMessage: (id) =>
     set((state) => {
-      const remaining = state.messages.filter((m) => m.id !== id);
+      const msgIndex = state.messages.findIndex((m) => m.id === id);
+      if (msgIndex === -1) return state;
+
+      const targetMsg = state.messages[msgIndex];
+      const idsToDelete = new Set<string>([id]);
+
+      // 若点击删除问题，且紧随其后的是 AI 回答，将回答成对删除
+      if (targetMsg.sender === 'user' && msgIndex + 1 < state.messages.length) {
+        const nextMsg = state.messages[msgIndex + 1];
+        if (nextMsg.sender === 'ai') {
+          idsToDelete.add(nextMsg.id);
+        }
+      }
+      // 若点击删除 AI 回答，且前置节点为对应问题，将问题成对删除
+      else if (targetMsg.sender === 'ai' && msgIndex - 1 >= 0) {
+        const prevMsg = state.messages[msgIndex - 1];
+        if (prevMsg.sender === 'user') {
+          idsToDelete.add(prevMsg.id);
+        }
+      }
+
+      const remaining = state.messages.filter((m) => !idsToDelete.has(m.id));
       const validTurns = remaining.filter((m) => m.sender !== 'system').length;
       const systemNotice: Message = {
         id: `sys_${Date.now()}`,
         sender: 'system',
-        text: `已删除 1 条对话。AI 上下文已重置为剩余 ${validTurns} 条消息。`,
+        text: `已成对移除 ${idsToDelete.size} 条对话（问答联动）。AI 上下文记忆已自动重置，当前记忆库重构为剩余 ${validTurns} 条消息。`,
         time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
       };
+
       const finalMessages = [...remaining, systemNotice];
       const updatedSessions = state.sessions.map((s) =>
         s.id === state.currentSessionId ? { ...s, messages: finalMessages } : s
       );
+
       return { messages: finalMessages, sessions: updatedSessions, contextTurnCount: validTurns };
     }),
 
+  // 批量删除：自动补齐选定项中未被选中的成对问答
   batchDeleteMessages: (ids) =>
     set((state) => {
-      const idSet = new Set(ids);
-      const remaining = state.messages.filter((m) => !idSet.has(m.id));
+      const idsToDelete = new Set<string>(ids);
+
+      state.messages.forEach((msg, idx) => {
+        if (idsToDelete.has(msg.id)) {
+          if (msg.sender === 'user' && idx + 1 < state.messages.length && state.messages[idx + 1].sender === 'ai') {
+            idsToDelete.add(state.messages[idx + 1].id);
+          } else if (msg.sender === 'ai' && idx - 1 >= 0 && state.messages[idx - 1].sender === 'user') {
+            idsToDelete.add(state.messages[idx - 1].id);
+          }
+        }
+      });
+
+      const remaining = state.messages.filter((m) => !idsToDelete.has(m.id));
       const validTurns = remaining.filter((m) => m.sender !== 'system').length;
       const systemNotice: Message = {
         id: `sys_${Date.now()}`,
         sender: 'system',
-        text: `已批量清除 ${ids.length} 条对话。当前记忆重置为剩余 ${validTurns} 条消息。`,
+        text: `已批量成对清除 ${idsToDelete.size} 条关联对话。AI 上下文记忆已自动重构为剩余 ${validTurns} 条消息。`,
         time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
       };
+
       const finalMessages = [...remaining, systemNotice];
       const updatedSessions = state.sessions.map((s) =>
         s.id === state.currentSessionId ? { ...s, messages: finalMessages } : s
       );
+
       return { messages: finalMessages, sessions: updatedSessions, contextTurnCount: validTurns };
     }),
 

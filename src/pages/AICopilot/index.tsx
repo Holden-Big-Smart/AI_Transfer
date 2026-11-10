@@ -33,7 +33,21 @@ export default function AICopilot() {
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const [isManageMode, setIsManageMode] = useState(false);
   const [selectedMsgIds, setSelectedMsgIds] = useState<string[]>([]);
-  
+
+  // 通用确认弹窗状态 (用于对话单条删除、批量删除及历史会话删除)
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    description: string;
+    confirmText?: string;
+    onConfirm: () => void;
+  }>({
+    isOpen: false,
+    title: '',
+    description: '',
+    onConfirm: () => {},
+  });
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -195,7 +209,16 @@ export default function AICopilot() {
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      deleteSession(s.id);
+                      setConfirmModal({
+                        isOpen: true,
+                        title: '确认删除历史会话？',
+                        description: `确定要永久移除会话【${s.title}】吗？该会话的所有对话与临时状态将被清空。`,
+                        confirmText: '确认删除',
+                        onConfirm: () => {
+                          deleteSession(s.id);
+                          setConfirmModal((prev) => ({ ...prev, isOpen: false }));
+                        }
+                      });
                     }}
                     className="opacity-0 group-hover:opacity-100 p-1 text-gray-500 hover:text-red-400 transition-opacity"
                     title="删除此会话"
@@ -272,7 +295,18 @@ export default function AICopilot() {
                 </button>
                 <span className="text-gray-600 text-xs">|</span>
                 <button
-                  onClick={handleExecuteBatchDelete}
+                  onClick={() => {
+                    setConfirmModal({
+                      isOpen: true,
+                      title: '确认批量删除对话？',
+                      description: `已选择 ${selectedMsgIds.length} 项。删除操作将自动联动补齐成对的问答，并重构 AI 历史记忆库。`,
+                      confirmText: '确认批量删除',
+                      onConfirm: () => {
+                        handleExecuteBatchDelete();
+                        setConfirmModal((prev) => ({ ...prev, isOpen: false }));
+                      }
+                    });
+                  }}
                   disabled={selectedMsgIds.length === 0}
                   className="flex items-center gap-1 text-xs text-red-400 hover:text-red-300 disabled:text-gray-600"
                 >
@@ -410,9 +444,20 @@ export default function AICopilot() {
                     <span>{msg.time}</span>
                     {!isManageMode && (
                       <button
-                        onClick={() => deleteMessage(msg.id)}
-                        className="opacity-0 group-hover:opacity-100 transition-opacity text-gray-500 hover:text-red-400"
-                        title="删除此条并同步重置 AI 记忆"
+                        onClick={() => {
+                          setConfirmModal({
+                            isOpen: true,
+                            title: '确认删除对话？',
+                            description: '系统将执行【成对删除】，同时移除与该条内容对应的问题或回答，并即时重置 AI 上下文记忆。',
+                            confirmText: '成对删除',
+                            onConfirm: () => {
+                              deleteMessage(msg.id);
+                              setConfirmModal((prev) => ({ ...prev, isOpen: false }));
+                            }
+                          });
+                        }}
+                        className="opacity-0 group-hover:opacity-100 transition-opacity text-gray-500 hover:text-red-400 p-0.5"
+                        title="成对删除此对话并同步重置 AI 记忆"
                       >
                         <Trash2 size={12} />
                       </button>
@@ -621,6 +666,40 @@ export default function AICopilot() {
         </div>
 
       </div>
+
+      {/* 全局操作确认弹窗 (Fail-Safe 防误触机制) */}
+      {confirmModal.isOpen && (
+        <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-50 animate-in fade-in duration-150">
+          <div className="bg-[#2a2d35] rounded-xl p-5 w-96 shadow-2xl border border-gray-700">
+            <div className="flex justify-between items-center mb-3">
+              <h3 className="text-sm font-bold text-gray-100">{confirmModal.title}</h3>
+              <button 
+                onClick={() => setConfirmModal((prev) => ({ ...prev, isOpen: false }))} 
+                className="text-gray-400 hover:text-white"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <p className="text-xs text-gray-300 mb-5 leading-relaxed bg-[#1e2128] p-3 rounded-lg border border-gray-800">
+              {confirmModal.description}
+            </p>
+            <div className="flex justify-end gap-2.5">
+              <button 
+                onClick={() => setConfirmModal((prev) => ({ ...prev, isOpen: false }))} 
+                className="px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:bg-[#323640] transition-colors"
+              >
+                取消
+              </button>
+              <button 
+                onClick={confirmModal.onConfirm} 
+                className="px-3.5 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-medium transition-colors shadow"
+              >
+                {confirmModal.confirmText || '确认删除'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
