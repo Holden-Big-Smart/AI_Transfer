@@ -3,7 +3,8 @@ import { useState, useRef, useEffect } from 'react';
 import { 
   Bot, Send, RefreshCw, Sparkles, Folder, FileText, 
   FolderOutput, CheckCircle2, Clock, Terminal, ChevronRight,
-  Paperclip, X, Trash2, CheckSquare, Square, AlertCircle
+  Paperclip, X, Trash2, CheckSquare, Square, AlertCircle,
+  History, MessageSquare, Plus
 } from 'lucide-react';
 import { useChatStore, type Message, type AttachedFile } from '../../store/useChatStore';
 import { useAuthStore } from '../../store/useAuthStore';
@@ -19,11 +20,14 @@ const formatBytes = (bytes: number) => {
 
 export default function AICopilot() {
   const { currentUser } = useAuthStore();
-  // 从全局 Zustand 树读取状态（页面切换不再丢失！）
+  // 引入会话管理相关字段与方法
   const { 
     messages, isThinking, selectedProject, syncStatus, lastSyncTime, contextTurnCount,
+    sessions, currentSessionId, createNewSession, switchSession, deleteSession,
     setThinking, setSelectedProject, setSyncStatus, addMessage, deleteMessage, batchDeleteMessages, clearAllMessages
   } = useChatStore();
+
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false); // 控制历史抽屉显隐
 
   const [inputText, setInputText] = useState('');
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
@@ -153,12 +157,90 @@ export default function AICopilot() {
         onChange={handleFileChange} 
       />
 
+      {/* 左侧历史会话抽屉（可折叠） */}
+      {isHistoryOpen && (
+        <div className="w-64 bg-[#1a1c23] border-r border-gray-800 flex flex-col h-full shrink-0 z-10 animate-in slide-in-from-left duration-200">
+          <div className="p-3 border-b border-gray-800 flex items-center justify-between">
+            <span className="text-xs font-semibold text-gray-300 flex items-center gap-1.5">
+              <MessageSquare size={14} className="text-blue-400" />
+              历史对话记录
+            </span>
+            <button onClick={() => setIsHistoryOpen(false)} className="text-gray-500 hover:text-white">
+              <X size={15} />
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
+            {sessions.map((s) => {
+              const isActive = s.id === currentSessionId;
+              return (
+                <div
+                  key={s.id}
+                  onClick={() => switchSession(s.id)}
+                  className={`group flex items-center justify-between p-2.5 rounded-xl cursor-pointer text-xs transition-colors border ${
+                    isActive
+                      ? 'bg-blue-600/15 border-blue-500/40 text-white'
+                      : 'bg-[#21242c] border-transparent text-gray-400 hover:bg-[#282c37] hover:text-gray-200'
+                  }`}
+                >
+                  <div className="truncate pr-2 flex-1">
+                    <div className="font-medium truncate text-gray-200">{s.title}</div>
+                    <div className="text-[10px] text-gray-500 flex items-center gap-1 mt-0.5">
+                      <span>{s.updatedAt}</span>
+                      <span>·</span>
+                      <span className="text-blue-400/80">【{s.project}】</span>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      deleteSession(s.id);
+                    }}
+                    className="opacity-0 group-hover:opacity-100 p-1 text-gray-500 hover:text-red-400 transition-opacity"
+                    title="删除此会话"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* 左侧主体：AI 对话流控制台 */}
       <div className="flex-1 flex flex-col h-full border-r border-gray-800 overflow-hidden">
-        
+
         {/* 对话窗口头部导航 */}
         <header className="h-14 bg-[#2a2d35]/60 border-b border-gray-700/60 flex items-center justify-between px-6 shrink-0">
           <div className="flex items-center gap-3">
+            {/* 历史会话抽屉切换按钮 */}
+            <button
+              onClick={() => setIsHistoryOpen(!isHistoryOpen)}
+              className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border transition-colors ${
+                isHistoryOpen
+                  ? 'bg-blue-600 border-blue-500 text-white'
+                  : 'bg-[#1e2128] border-gray-700 text-gray-300 hover:text-white hover:bg-[#323640]'
+              }`}
+              title="查看历史对话记录"
+            >
+              <History size={14} />
+              <span>历史 ({sessions.length})</span>
+            </button>
+
+            {/* 开启新会话按钮 */}
+            <button
+              onClick={() => createNewSession()}
+              className="flex items-center gap-1 text-xs bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/40 px-2.5 py-1.5 rounded-lg transition-colors"
+              title="保留当前对话并开启一个全新的会话"
+            >
+              <Plus size={14} />
+              <span>新会话</span>
+            </button>
+
+            <div className="h-4 w-px bg-gray-700 mx-1" />
+
             <div className="w-8 h-8 rounded-lg bg-blue-600/20 text-blue-400 flex items-center justify-center">
               <Bot size={18} />
             </div>
