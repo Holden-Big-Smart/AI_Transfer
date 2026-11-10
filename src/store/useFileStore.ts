@@ -36,6 +36,12 @@ export interface FileStore {
   addTask: (task: UploadTask) => void;
   updateTaskProgress: (id: string, progress: number, status?: UploadTask['status']) => void;
   removeTask: (id: string) => void;
+
+  // 新增：剪切/移动与重命名接口
+  clipboard: { id: string; action: 'cut' | 'copy' } | null;
+  setClipboard: (item: { id: string; action: 'cut' | 'copy' } | null) => void;
+  renameNode: (id: string, newName: string) => void;
+  moveNode: (id: string, targetParentId: string | null) => void;
 }
 
 const initialFiles: FileNode[] = [
@@ -97,5 +103,24 @@ export const useFileStore = create<FileStore>((set) => ({
       )
     })),
     
-  removeTask: (id) => set((state) => ({ tasks: state.tasks.filter(t => t.id !== id) }))
+  removeTask: (id) => set((state) => ({ tasks: state.tasks.filter(t => t.id !== id) })),
+
+  // 新增：剪贴板与移动/重命名实现
+  clipboard: null,
+  setClipboard: (item) => set({ clipboard: item }),
+
+  renameNode: (id, newName) =>
+    set((state) => ({
+      files: state.files.map((f) => (f.id === id ? { ...f, name: newName } : f))
+    })),
+
+  moveNode: (id, targetParentId) =>
+    set((state) => {
+      // 防呆校验：禁止把文件夹移动到自身层级
+      if (id === targetParentId) return state;
+      return {
+        files: state.files.map((f) => (f.id === id ? { ...f, parentId: targetParentId } : f)),
+        clipboard: null // 粘贴移动完成后清空剪贴板
+      };
+    })
 }));

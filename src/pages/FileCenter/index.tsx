@@ -4,6 +4,7 @@ import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts';
 import { 
   LogOut, UploadCloud, FolderPlus, Download, Trash2, Home, 
   ChevronRight, X, CheckCircle2, Clock, HardDrive, FileUp, FolderUp,
+  Edit2, Scissors, ClipboardPaste,
   PieChart as PieChartIcon
 } from 'lucide-react';
 import { useFileStore } from '../../store/useFileStore';
@@ -45,6 +46,7 @@ export default function FileCenter() {
     files = [], 
     currentPath = [], 
     tasks = [], 
+    clipboard, setClipboard, renameNode, moveNode,
     enterFolder, 
     goToBreadcrumb, 
     deleteFile, 
@@ -61,6 +63,14 @@ export default function FileCenter() {
   // 模态弹窗与输入引用
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
+
+  // 控制重命名弹窗
+  const [renameModal, setRenameModal] = useState<{ isOpen: boolean; id: string; oldName: string }>({
+    isOpen: false,
+    id: '',
+    oldName: ''
+  });
+  const [renamedName, setRenamedName] = useState('');
   
   // 待上传文件暂存队列
   const [stagedFiles, setStagedFiles] = useState<File[]>([]);
@@ -359,12 +369,24 @@ export default function FileCenter() {
                 </div>
               ))}
             </div>
-            <button 
-              onClick={() => setIsModalOpen(true)} 
-              className="text-blue-400 hover:text-blue-300 flex items-center gap-1 text-xs bg-[#323640] px-3 py-1.5 rounded transition-colors"
-            >
-              <FolderPlus size={14} /> 新建文件夹
-            </button>
+            <div className="flex items-center gap-2">
+              {clipboard && (
+                <button
+                  onClick={() => moveNode(clipboard.id, currentFolderId)}
+                  className="text-yellow-400 hover:text-yellow-300 flex items-center gap-1 text-xs bg-yellow-950/40 border border-yellow-700/50 px-2.5 py-1.5 rounded transition-colors"
+                  title="将已剪切的项移动到当前打开的目录"
+                >
+                  <ClipboardPaste size={14} /> 粘贴到此处
+                </button>
+              )}
+
+              <button 
+                onClick={() => setIsModalOpen(true)} 
+                className="text-blue-400 hover:text-blue-300 flex items-center gap-1 text-xs bg-[#323640] px-3 py-1.5 rounded transition-colors"
+              >
+                <FolderPlus size={14} /> 新建文件夹
+              </button>
+            </div>
           </div>
 
           <div className="grid grid-cols-12 gap-4 text-xs text-gray-400 font-semibold border-b border-gray-700 pb-2 mb-2">
@@ -391,10 +413,38 @@ export default function FileCenter() {
                   </div>
                   <div className="col-span-2 text-gray-400">{formatBytes(file.size)}</div>
                   <div className="col-span-2 text-gray-500">{file.uploadTime}</div>
-                  <div className="col-span-2 text-right opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button className="text-blue-400 hover:text-blue-300 mr-3" title="下载"><Download size={14} className="inline" /></button>
+                  <div className="col-span-2 text-right opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-end gap-2">
+                    <button className="text-blue-400 hover:text-blue-300" title="下载">
+                      <Download size={14} />
+                    </button>
+
+                    {/* 普通用户及 Admin 均可重命名与移动，Guest 禁用 */}
+                    {currentUser.role !== 'guest' && (
+                      <>
+                        <button
+                          onClick={() => {
+                            setRenamedName(file.name);
+                            setRenameModal({ isOpen: true, id: file.id, oldName: file.name });
+                          }}
+                          className="text-gray-400 hover:text-yellow-400"
+                          title="重命名"
+                        >
+                          <Edit2 size={13} />
+                        </button>
+                        <button
+                          onClick={() => setClipboard({ id: file.id, action: 'cut' })}
+                          className={`hover:text-blue-400 ${clipboard?.id === file.id ? 'text-blue-400 animate-pulse' : 'text-gray-400'}`}
+                          title="剪切 (可在其他目录点击粘贴)"
+                        >
+                          <Scissors size={13} />
+                        </button>
+                      </>
+                    )}
+
                     {currentUser.canDelete && (
-                      <button onClick={() => deleteFile && deleteFile(file.id)} className="text-red-400 hover:text-red-300" title="删除"><Trash2 size={14} className="inline" /></button>
+                      <button onClick={() => deleteFile && deleteFile(file.id)} className="text-red-400 hover:text-red-300" title="删除">
+                        <Trash2 size={14} />
+                      </button>
                     )}
                   </div>
                 </div>
@@ -423,6 +473,51 @@ export default function FileCenter() {
               <button onClick={() => setIsModalOpen(false)} className="px-3 py-1.5 rounded text-xs text-gray-400 hover:bg-[#323640] transition-colors">取消</button>
               <button onClick={handleCreateFolder} disabled={!newFolderName.trim()} className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white rounded text-xs transition-colors">
                 确认创建
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 重命名弹窗 */}
+      {renameModal.isOpen && (
+        <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-[#2a2d35] rounded-lg p-5 w-88 shadow-2xl border border-gray-700">
+            <div className="flex justify-between items-center mb-3">
+              <h3 className="text-base font-bold text-gray-200">重命名项目</h3>
+              <button onClick={() => setRenameModal({ isOpen: false, id: '', oldName: '' })} className="text-gray-400 hover:text-white">
+                <X size={18} />
+              </button>
+            </div>
+            <input 
+              type="text" autoFocus value={renamedName}
+              onChange={(e) => setRenamedName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && renamedName.trim()) {
+                  renameNode(renameModal.id, renamedName.trim());
+                  setRenameModal({ isOpen: false, id: '', oldName: '' });
+                }
+              }}
+              className="w-full bg-[#1e2128] border border-gray-600 rounded px-3 py-2 mb-4 text-xs text-gray-200 focus:outline-none focus:border-blue-400"
+            />
+            <div className="flex justify-end gap-2">
+              <button 
+                onClick={() => setRenameModal({ isOpen: false, id: '', oldName: '' })} 
+                className="px-3 py-1.5 rounded text-xs text-gray-400 hover:bg-[#323640] transition-colors"
+              >
+                取消
+              </button>
+              <button 
+                onClick={() => {
+                  if (renamedName.trim()) {
+                    renameNode(renameModal.id, renamedName.trim());
+                    setRenameModal({ isOpen: false, id: '', oldName: '' });
+                  }
+                }} 
+                disabled={!renamedName.trim()} 
+                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white rounded text-xs transition-colors"
+              >
+                确认修改
               </button>
             </div>
           </div>
