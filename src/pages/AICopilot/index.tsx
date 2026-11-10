@@ -6,6 +6,7 @@ import {
   Paperclip, X, Trash2, CheckSquare, Square, AlertCircle
 } from 'lucide-react';
 import { useChatStore, type Message, type AttachedFile } from '../../store/useChatStore';
+import { useAuthStore } from '../../store/useAuthStore';
 
 // 字节单位格式化
 const formatBytes = (bytes: number) => {
@@ -17,6 +18,7 @@ const formatBytes = (bytes: number) => {
 };
 
 export default function AICopilot() {
+  const { currentUser } = useAuthStore();
   // 从全局 Zustand 树读取状态（页面切换不再丢失！）
   const { 
     messages, isThinking, selectedProject, syncStatus, lastSyncTime, contextTurnCount,
@@ -211,13 +213,16 @@ export default function AICopilot() {
                 >
                   管理对话
                 </button>
-                <button 
-                  onClick={clearAllMessages}
-                  className="text-xs text-red-400 hover:text-red-300 bg-[#1e2128] border border-gray-700/60 px-2 py-1 rounded transition-colors"
-                  title="清空上下文记忆"
-                >
-                  清空历史
-                </button>
+                {/* Admin 与 AE (普通用户) 均可开启新会话/清空历史，仅 Guest 禁用 */}
+                {currentUser.role !== 'guest' && (
+                  <button 
+                    onClick={clearAllMessages}
+                    className="text-xs text-red-400 hover:text-red-300 bg-[#1e2128] border border-gray-700/60 px-2 py-1 rounded transition-colors"
+                    title="清空当前会话上下文并重置 AI 记忆"
+                  >
+                    清空历史
+                  </button>
+                )}
               </div>
             )}
 
@@ -468,24 +473,33 @@ export default function AICopilot() {
               可用项目目录 (点击切换 AI 路由)
             </span>
             
+            {/* 项目列表动态过滤 */}
             <div className="space-y-1">
-              {['南方电网', 'Cyber_EcoTank', '通用公用库'].map((proj) => (
-                <div
-                  key={proj}
-                  onClick={() => setSelectedProject(proj)}
-                  className={`flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer text-xs transition-colors ${
-                    selectedProject === proj
-                      ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30'
-                      : 'text-gray-300 hover:bg-[#2e323c]'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 truncate">
-                    <Folder size={14} className={selectedProject === proj ? 'text-blue-400' : 'text-yellow-500'} />
-                    <span className="truncate">{proj}</span>
+              {['南方电网', 'Cyber_EcoTank', '通用公用库']
+                .filter((proj) => currentUser.role === 'admin' || currentUser.allowedProjects.includes(proj))
+                .map((proj) => (
+                  <div
+                    key={proj}
+                    onClick={() => setSelectedProject(proj)}
+                    className={`flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer text-xs transition-colors ${
+                      selectedProject === proj
+                        ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30'
+                        : 'text-gray-300 hover:bg-[#2e323c]'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 truncate">
+                      <Folder size={14} className={selectedProject === proj ? 'text-blue-400' : 'text-yellow-500'} />
+                      <span className="truncate">{proj}</span>
+                    </div>
+                    <ChevronRight size={14} className="text-gray-500" />
                   </div>
-                  <ChevronRight size={14} className="text-gray-500" />
+                ))}
+
+              {currentUser.role === 'guest' && (
+                <div className="p-3 bg-[#1e2128] rounded text-[11px] text-gray-500 text-center">
+                  访客身份无权限挂载内部项目知识库
                 </div>
-              ))}
+              )}
             </div>
           </div>
 

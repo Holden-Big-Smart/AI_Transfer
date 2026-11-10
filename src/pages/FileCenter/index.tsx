@@ -7,6 +7,7 @@ import {
   PieChart as PieChartIcon
 } from 'lucide-react';
 import { useFileStore } from '../../store/useFileStore';
+import { useAuthStore } from '../../store/useAuthStore';
 
 // 字节单位格式化
 const formatBytes = (bytes: number | null) => {
@@ -39,6 +40,7 @@ const formatQuotaPercent = (bytes: number) => {
 };
 
 export default function FileCenter() {
+  const { currentUser } = useAuthStore();
   const { 
     files = [], 
     currentPath = [], 
@@ -292,9 +294,10 @@ export default function FileCenter() {
                 {/* 确认上传按钮 */}
                 <button 
                   onClick={handleStartUpload}
-                  className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 rounded text-xs transition-colors shadow-md"
+                  disabled={!currentUser.canUpload}
+                  className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white font-medium py-2 rounded text-xs transition-colors shadow-md"
                 >
-                  确认开始传送 ({stagedFiles.length} 个项目)
+                  {currentUser.canUpload ? `确认开始传送 (${stagedFiles.length} 个项目)` : '只读访客无上传权限'}
                 </button>
               </div>
             )}
@@ -390,7 +393,9 @@ export default function FileCenter() {
                   <div className="col-span-2 text-gray-500">{file.uploadTime}</div>
                   <div className="col-span-2 text-right opacity-0 group-hover:opacity-100 transition-opacity">
                     <button className="text-blue-400 hover:text-blue-300 mr-3" title="下载"><Download size={14} className="inline" /></button>
-                    <button onClick={() => deleteFile && deleteFile(file.id)} className="text-red-400 hover:text-red-300" title="删除"><Trash2 size={14} className="inline" /></button>
+                    {currentUser.canDelete && (
+                      <button onClick={() => deleteFile && deleteFile(file.id)} className="text-red-400 hover:text-red-300" title="删除"><Trash2 size={14} className="inline" /></button>
+                    )}
                   </div>
                 </div>
               ))
