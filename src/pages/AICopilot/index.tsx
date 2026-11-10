@@ -27,7 +27,18 @@ export default function AICopilot() {
     setThinking, setSelectedProject, setSyncStatus, addMessage, deleteMessage, batchDeleteMessages, clearAllMessages
   } = useChatStore();
 
-  const [isHistoryOpen, setIsHistoryOpen] = useState(false); // 控制历史抽屉显隐
+  // 记住历史抽屉开关状态，刷新页面不再重置
+  const [isHistoryOpen, setIsHistoryOpen] = useState(() => {
+    return localStorage.getItem('ai_history_drawer_open') === 'true';
+  });
+
+  const toggleHistoryDrawer = () => {
+    setIsHistoryOpen((prev) => {
+      const next = !prev;
+      localStorage.setItem('ai_history_drawer_open', String(next));
+      return next;
+    });
+  };
 
   const [inputText, setInputText] = useState('');
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
@@ -179,7 +190,7 @@ export default function AICopilot() {
               <MessageSquare size={14} className="text-blue-400" />
               历史对话记录
             </span>
-            <button onClick={() => setIsHistoryOpen(false)} className="text-gray-500 hover:text-white">
+            <button onClick={toggleHistoryDrawer} className="text-gray-500 hover:text-white">
               <X size={15} />
             </button>
           </div>
@@ -240,7 +251,7 @@ export default function AICopilot() {
           <div className="flex items-center gap-3">
             {/* 历史会话抽屉切换按钮 */}
             <button
-              onClick={() => setIsHistoryOpen(!isHistoryOpen)}
+              onClick={toggleHistoryDrawer}
               className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border transition-colors ${
                 isHistoryOpen
                   ? 'bg-blue-600 border-blue-500 text-white'
@@ -330,7 +341,7 @@ export default function AICopilot() {
                   管理对话
                 </button>
                 {/* Admin 与 AE (普通用户) 均可开启新会话/清空历史，仅 Guest 禁用 */}
-                {currentUser.role !== 'guest' && (
+                {currentUser?.role !== 'guest' && (
                   <button 
                     onClick={clearAllMessages}
                     className="text-xs text-red-400 hover:text-red-300 bg-[#1e2128] border border-gray-700/60 px-2 py-1 rounded transition-colors"
@@ -603,7 +614,7 @@ export default function AICopilot() {
             {/* 项目列表动态过滤 */}
             <div className="space-y-1">
               {['南方电网', 'Cyber_EcoTank', '通用公用库']
-                .filter((proj) => currentUser.role === 'admin' || currentUser.allowedProjects.includes(proj))
+                .filter((proj) => currentUser?.role === 'admin' || currentUser?.allowedProjects.includes(proj))
                 .map((proj) => (
                   <div
                     key={proj}
@@ -622,7 +633,7 @@ export default function AICopilot() {
                   </div>
                 ))}
 
-              {currentUser.role === 'guest' && (
+              {currentUser?.role === 'guest' && (
                 <div className="p-3 bg-[#1e2128] rounded text-[11px] text-gray-500 text-center">
                   访客身份无权限挂载内部项目知识库
                 </div>

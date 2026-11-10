@@ -10,5 +10,5 @@ html, body, #root {
   height: 100%;
   margin: 0;
   padding: 0;
-  background-color: #f3f4f6; /* Tailwind 的 gray-100 作为底层背景 */
+  background-color: #1e2128; /* 从之前的 #f3f4f6 彻底改为深黑灰色 */
 }

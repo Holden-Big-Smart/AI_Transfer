@@ -8,6 +8,20 @@ export interface FileNode {
   isFolder: boolean;
   uploadTime: string;
   parentId: string | null; 
+  ownerId: string;            // 归属者用户ID（'system' 为系统内置）
+  isPublicFolder?: boolean;   // 是否属于公共空间分支
+  sharedWith?: string[];      // 定向共享列表（用户ID数组，为空则公共内全员可见）
+}
+
+// 新增：操作审计日志接口
+export interface OperationLog {
+  id: string;
+  time: string;
+  operatorName: string;
+  operatorUsername: string;
+  action: '上传' | '删除' | '重命名' | '移动' | '创建文件夹';
+  targetName: string;
+  details?: string;
 }
 
 export interface PathNode {
@@ -27,32 +41,53 @@ export interface FileStore {
   files: FileNode[];
   currentPath: PathNode[];
   tasks: UploadTask[];
-  
+  clipboard: { id: string; action: 'cut' | 'copy' } | null;
+  operationLogs: OperationLog[]; // 新增：日志队列
+
   enterFolder: (id: string, name: string) => void;
   goToBreadcrumb: (index: number) => void;
-  deleteFile: (id: string) => void;
-  createFolder: (name: string, parentId: string | null) => void; 
-  addFile: (file: FileNode) => void;
+  deleteFile: (id: string, operator?: { name: string; username: string }) => void;
+  createFolder: (name: string, parentId: string | null, ownerId: string, isPublic?: boolean, operator?: { name: string; username: string }) => void;
+  addFile: (file: FileNode, operator?: { name: string; username: string }) => void;
+  renameNode: (id: string, newName: string, operator?: { name: string; username: string }) => void;
+  moveNode: (id: string, targetParentId: string | null, operator?: { name: string; username: string }) => void;
+  updateFileShare: (id: string, sharedWithUserIds: string[]) => void; // 新增：更新指定共享
+  setClipboard: (item: { id: string; action: 'cut' | 'copy' } | null) => void;
   addTask: (task: UploadTask) => void;
   updateTaskProgress: (id: string, progress: number, status?: UploadTask['status']) => void;
   removeTask: (id: string) => void;
-
-  // 新增：剪切/移动与重命名接口
-  clipboard: { id: string; action: 'cut' | 'copy' } | null;
-  setClipboard: (item: { id: string; action: 'cut' | 'copy' } | null) => void;
-  renameNode: (id: string, newName: string) => void;
-  moveNode: (id: string, targetParentId: string | null) => void;
 }
 
+// 初始数据：包含一个常驻的系统公共共享根目录
 const initialFiles: FileNode[] = [
-  { id: '1', name: '南方电网', size: null, isFolder: true, uploadTime: '2026-11-10 09:00', parentId: null },
-  { id: '2', name: 'APAConsole_2026.1.0.docx', size: 15414000, isFolder: false, uploadTime: '2026-11-09 15:49', parentId: null }
+  {
+    id: 'folder_public_root',
+    name: '📂 公共共享空间',
+    size: null,
+    isFolder: true,
+    uploadTime: '2026-11-10 12:00',
+    parentId: null,
+    ownerId: 'system',
+    isPublicFolder: true,
+  },
+  {
+    id: 'file_admin_sample',
+    name: '管理员私有备忘录.docx',
+    size: 15414000,
+    isFolder: false,
+    uploadTime: '2026-11-09 15:49',
+    parentId: null,
+    ownerId: 'u_admin',
+    isPublicFolder: false,
+  }
 ];
 
 export const useFileStore = create<FileStore>((set) => ({
   files: initialFiles,
   currentPath: [],
   tasks: [],
+  clipboard: null,
+  operationLogs: [],
 
   enterFolder: (id, name) => 
     set((state) => ({ currentPath: [...state.currentPath, { id, name }] })),
@@ -60,12 +95,60 @@ export const useFileStore = create<FileStore>((set) => ({
   goToBreadcrumb: (index) =>
     set((state) => ({ currentPath: index === -1 ? [] : state.currentPath.slice(0, index + 1) })),
 
-  deleteFile: (id) =>
+  createFolder: (name, parentId, ownerId, isPublic, operator) =>
     set((state) => {
-      // 级联收集当前节点及其所有深层子节点 ID
+      const newFolder: FileNode = {
+        id: `folder_${Date.now()}`,
+        name,
+        size: null,
+        isFolder: true,
+        uploadTime: new Date().toLocaleString('zh-CN', { hour12: false }),
+        parentId,
+        ownerId,
+        isPublicFolder: isPublic,
+      };
+
+      const newLogs: OperationLog[] = isPublic && operator ? [
+        {
+          id: `log_${Date.now()}`,
+          time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+          operatorName: operator.name,
+          operatorUsername: operator.username,
+          action: '创建文件夹',
+          targetName: name,
+          details: '在公共共享空间新建目录'
+        },
+        ...state.operationLogs
+      ] : state.operationLogs;
+
+      return { files: [...state.files, newFolder], operationLogs: newLogs };
+    }),
+
+  addFile: (file, operator) =>
+    set((state) => {
+      const newLogs: OperationLog[] = file.isPublicFolder && operator ? [
+        {
+          id: `log_${Date.now()}`,
+          time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+          operatorName: operator.name,
+          operatorUsername: operator.username,
+          action: '上传',
+          targetName: file.name,
+          details: file.sharedWith?.length ? `定向共享给 ${file.sharedWith.length} 人` : '全员可见'
+        },
+        ...state.operationLogs
+      ] : state.operationLogs;
+
+      return { files: [...state.files, file], operationLogs: newLogs };
+    }),
+
+  deleteFile: (id, operator) =>
+    set((state) => {
+      const target = state.files.find(f => f.id === id);
+      if (!target || target.id === 'folder_public_root') return state; // 系统根目录禁止删除
+
       const idsToDelete = new Set<string>([id]);
       let hasNewAddition = true;
-
       while (hasNewAddition) {
         hasNewAddition = false;
         for (const file of state.files) {
@@ -76,51 +159,88 @@ export const useFileStore = create<FileStore>((set) => ({
         }
       }
 
-      return { files: state.files.filter((f) => !idsToDelete.has(f.id)) };
-    }),
+      const newLogs: OperationLog[] = target.isPublicFolder && operator ? [
+        {
+          id: `log_${Date.now()}`,
+          time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+          operatorName: operator.name,
+          operatorUsername: operator.username,
+          action: '删除',
+          targetName: target.name,
+          details: `级联移除了 ${idsToDelete.size} 个节点`
+        },
+        ...state.operationLogs
+      ] : state.operationLogs;
 
-  createFolder: (name, parentId) =>
-    set((state) => {
-      const newFolder: FileNode = {
-        id: Date.now().toString(),
-        name: name,
-        size: null,
-        isFolder: true,
-        uploadTime: new Date().toLocaleString('zh-CN', { hour12: false }),
-        parentId: parentId,
+      return {
+        files: state.files.filter((f) => !idsToDelete.has(f.id)),
+        operationLogs: newLogs
       };
-      return { files: [...state.files, newFolder] };
     }),
 
-  addFile: (file) => set((state) => ({ files: [...state.files, file] })),
-  
+  renameNode: (id, newName, operator) =>
+    set((state) => {
+      const target = state.files.find(f => f.id === id);
+      if (!target || target.id === 'folder_public_root') return state;
+
+      const newLogs: OperationLog[] = target.isPublicFolder && operator ? [
+        {
+          id: `log_${Date.now()}`,
+          time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+          operatorName: operator.name,
+          operatorUsername: operator.username,
+          action: '重命名',
+          targetName: `${target.name} ➔ ${newName}`,
+        },
+        ...state.operationLogs
+      ] : state.operationLogs;
+
+      return {
+        files: state.files.map((f) => (f.id === id ? { ...f, name: newName } : f)),
+        operationLogs: newLogs
+      };
+    }),
+
+  moveNode: (id, targetParentId, operator) =>
+    set((state) => {
+      const target = state.files.find(f => f.id === id);
+      if (!target || id === targetParentId) return state;
+
+      const targetParent = state.files.find(f => f.id === targetParentId);
+      const isNowPublic = targetParent ? !!targetParent.isPublicFolder : false;
+
+      const newLogs: OperationLog[] = (target.isPublicFolder || isNowPublic) && operator ? [
+        {
+          id: `log_${Date.now()}`,
+          time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+          operatorName: operator.name,
+          operatorUsername: operator.username,
+          action: '移动',
+          targetName: target.name,
+          details: `移入目标目录 [${targetParent?.name || '根目录'}]`
+        },
+        ...state.operationLogs
+      ] : state.operationLogs;
+
+      return {
+        files: state.files.map((f) => (f.id === id ? { ...f, parentId: targetParentId, isPublicFolder: isNowPublic } : f)),
+        clipboard: null,
+        operationLogs: newLogs
+      };
+    }),
+
+  updateFileShare: (id, sharedWithUserIds) =>
+    set((state) => ({
+      files: state.files.map((f) => (f.id === id ? { ...f, sharedWith: sharedWithUserIds } : f))
+    })),
+
+  setClipboard: (item) => set({ clipboard: item }),
   addTask: (task) => set((state) => ({ tasks: [task, ...state.tasks] })),
-  
   updateTaskProgress: (id, progress, status) =>
     set((state) => ({
-      tasks: state.tasks.map((t) => 
+      tasks: state.tasks.map((t) =>
         t.id === id ? { ...t, progress, status: status || t.status } : t
       )
     })),
-    
-  removeTask: (id) => set((state) => ({ tasks: state.tasks.filter(t => t.id !== id) })),
-
-  // 新增：剪贴板与移动/重命名实现
-  clipboard: null,
-  setClipboard: (item) => set({ clipboard: item }),
-
-  renameNode: (id, newName) =>
-    set((state) => ({
-      files: state.files.map((f) => (f.id === id ? { ...f, name: newName } : f))
-    })),
-
-  moveNode: (id, targetParentId) =>
-    set((state) => {
-      // 防呆校验：禁止把文件夹移动到自身层级
-      if (id === targetParentId) return state;
-      return {
-        files: state.files.map((f) => (f.id === id ? { ...f, parentId: targetParentId } : f)),
-        clipboard: null // 粘贴移动完成后清空剪贴板
-      };
-    })
+  removeTask: (id) => set((state) => ({ tasks: state.tasks.filter(t => t.id !== id) }))
 }));

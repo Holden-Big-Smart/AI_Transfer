@@ -4,7 +4,7 @@ import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts';
 import { 
   LogOut, UploadCloud, FolderPlus, Download, Trash2, Home, 
   ChevronRight, X, CheckCircle2, Clock, HardDrive, FileUp, FolderUp,
-  Edit2, Scissors, ClipboardPaste,
+  Edit2, Scissors, ClipboardPaste, Share2, ClipboardList,
   PieChart as PieChartIcon
 } from 'lucide-react';
 import { useFileStore } from '../../store/useFileStore';
@@ -41,24 +41,51 @@ const formatQuotaPercent = (bytes: number) => {
 };
 
 export default function FileCenter() {
-  const { currentUser } = useAuthStore();
+  const { currentUser, users, logout } = useAuthStore();
   const { 
     files = [], 
     currentPath = [], 
     tasks = [], 
     clipboard, setClipboard, renameNode, moveNode,
-    enterFolder, 
-    goToBreadcrumb, 
-    deleteFile, 
-    createFolder, 
-    addFile, 
-    addTask, 
-    updateTaskProgress, 
-    removeTask 
+    enterFolder, goToBreadcrumb, deleteFile, createFolder,
+    addFile, addTask, updateTaskProgress, removeTask,
+    operationLogs = [], updateFileShare
   } = useFileStore();
-  
+
+  // 审计日志抽屉状态 (仅 Admin 可见)
+  const [isLogOpen, setIsLogOpen] = useState(false);
+
+  // 定向共享设置弹窗状态
+  const [shareModal, setShareModal] = useState<{ isOpen: boolean; fileId: string; fileName: string; sharedWith: string[] }>({
+    isOpen: false,
+    fileId: '',
+    fileName: '',
+    sharedWith: []
+  });
+
+  // 获取当前所在层级
   const currentFolderId = currentPath.length > 0 ? currentPath[currentPath.length - 1].id : null;
-  const displayFiles = (files || []).filter(f => f.parentId === currentFolderId);
+  const currentParentNode = files.find(f => f.id === currentFolderId);
+  const isInPublicSpace = currentFolderId === 'folder_public_root' || !!currentParentNode?.isPublicFolder;
+
+  // === 核心逻辑：数据隔离与可见性过滤 ===
+  const displayFiles = files.filter((file) => {
+    // 1. 必须处于当前层级
+    if (file.parentId !== currentFolderId) return false;
+
+    // 2. 如果在公共空间下：
+    if (isInPublicSpace || file.id === 'folder_public_root') {
+      if (file.id === 'folder_public_root') return true; // 公共根目录所有人可见
+      if (currentUser?.role === 'admin') return true;    // 管理员在公共空间穿透可见
+      if (file.ownerId === currentUser?.id) return true; // 上传者本人可见
+      // 如果未配置定向共享，则所有人可见；否则仅列表内的用户可见
+      if (!file.sharedWith || file.sharedWith.length === 0) return true;
+      return file.sharedWith.includes(currentUser?.id || '');
+    }
+
+    // 3. 如果在私有个人空间下：实现严格隔离（管理员也只能看到自己的私有文件）
+    return file.ownerId === currentUser?.id;
+  });
 
   // 模态弹窗与输入引用
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -131,7 +158,7 @@ export default function FileCenter() {
 
   // 触发真实/模拟上传
   const handleStartUpload = () => {
-    if (stagedFiles.length === 0) return;
+    if (stagedFiles.length === 0 || !currentUser) return;
 
     stagedFiles.forEach((file) => {
       const taskId = `task_${Date.now()}_${Math.random()}`;
@@ -165,7 +192,10 @@ export default function FileCenter() {
               isFolder: false,
               uploadTime: new Date().toLocaleString('zh-CN', { hour12: false }),
               parentId: currentFolderId,
-            });
+              ownerId: currentUser.id,
+              isPublicFolder: isInPublicSpace,
+              sharedWith: [] // 初始默认公共全员可见，可在列表再次指定
+            }, { name: currentUser.name, username: currentUser.username });
           }
         } else {
           if (updateTaskProgress) {
@@ -180,8 +210,14 @@ export default function FileCenter() {
   };
 
   const handleCreateFolder = () => {
-    if (newFolderName.trim() && createFolder) {
-      createFolder(newFolderName.trim(), currentFolderId);
+    if (newFolderName.trim() && createFolder && currentUser) {
+      createFolder(
+        newFolderName.trim(),
+        currentFolderId,
+        currentUser.id,
+        isInPublicSpace,
+        { name: currentUser.name, username: currentUser.username }
+      );
       setNewFolderName('');
       setIsModalOpen(false);
     }
@@ -213,7 +249,10 @@ export default function FileCenter() {
       {/* 顶部导航 */}
       <header className="flex justify-between items-center mb-6">
         <h1 className="text-2xl font-bold text-blue-400">文件管理中心</h1>
-        <button className="flex items-center gap-2 bg-red-600 hover:bg-red-700 px-4 py-2 rounded text-sm transition-colors">
+        <button
+          onClick={logout}
+          className="flex items-center gap-2 bg-red-600 hover:bg-red-700 px-4 py-2 rounded text-sm transition-colors"
+        >
           <LogOut size={16} /> 退出登录
         </button>
       </header>
@@ -304,10 +343,10 @@ export default function FileCenter() {
                 {/* 确认上传按钮 */}
                 <button 
                   onClick={handleStartUpload}
-                  disabled={!currentUser.canUpload}
+                  disabled={currentUser?.role === 'guest'}
                   className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white font-medium py-2 rounded text-xs transition-colors shadow-md"
                 >
-                  {currentUser.canUpload ? `确认开始传送 (${stagedFiles.length} 个项目)` : '只读访客无上传权限'}
+                  {currentUser?.role !== 'guest' ? `确认开始传送 (${stagedFiles.length} 个项目)` : '只读访客无上传权限'}
                 </button>
               </div>
             )}
@@ -370,9 +409,20 @@ export default function FileCenter() {
               ))}
             </div>
             <div className="flex items-center gap-2">
+              {currentUser?.role === 'admin' && (
+                <button
+                  onClick={() => setIsLogOpen(true)}
+                  className="text-gray-300 hover:text-white flex items-center gap-1 text-xs bg-[#323640] px-2.5 py-1.5 rounded transition-colors"
+                  title="查看公共空间操作日志"
+                >
+                  <ClipboardList size={14} className="text-blue-400" />
+                  <span>审计日志 ({operationLogs.length})</span>
+                </button>
+              )}
+
               {clipboard && (
                 <button
-                  onClick={() => moveNode(clipboard.id, currentFolderId)}
+                  onClick={() => moveNode(clipboard.id, currentFolderId, { name: currentUser!.name, username: currentUser!.username })}
                   className="text-yellow-400 hover:text-yellow-300 flex items-center gap-1 text-xs bg-yellow-950/40 border border-yellow-700/50 px-2.5 py-1.5 rounded transition-colors"
                   title="将已剪切的项移动到当前打开的目录"
                 >
@@ -418,8 +468,24 @@ export default function FileCenter() {
                       <Download size={14} />
                     </button>
 
-                    {/* 普通用户及 Admin 均可重命名与移动，Guest 禁用 */}
-                    {currentUser.role !== 'guest' && (
+                    {/* 在公共空间下，允许作者或管理员配置指定共享 */}
+                    {isInPublicSpace && file.id !== 'folder_public_root' && (file.ownerId === currentUser?.id || currentUser?.role === 'admin') && (
+                      <button
+                        onClick={() => setShareModal({
+                          isOpen: true,
+                          fileId: file.id,
+                          fileName: file.name,
+                          sharedWith: file.sharedWith || []
+                        })}
+                        className={`hover:text-blue-400 ${file.sharedWith && file.sharedWith.length > 0 ? 'text-blue-400' : 'text-gray-400'}`}
+                        title={file.sharedWith && file.sharedWith.length > 0 ? `已指定 ${file.sharedWith.length} 人可见` : '全员可见 (点击指定共享)'}
+                      >
+                        <Share2 size={13} />
+                      </button>
+                    )}
+
+                    {/* 非系统根目录允许重命名与剪切 */}
+                    {currentUser?.role !== 'guest' && file.id !== 'folder_public_root' && (
                       <>
                         <button
                           onClick={() => {
@@ -434,15 +500,20 @@ export default function FileCenter() {
                         <button
                           onClick={() => setClipboard({ id: file.id, action: 'cut' })}
                           className={`hover:text-blue-400 ${clipboard?.id === file.id ? 'text-blue-400 animate-pulse' : 'text-gray-400'}`}
-                          title="剪切 (可在其他目录点击粘贴)"
+                          title="剪切"
                         >
                           <Scissors size={13} />
                         </button>
                       </>
                     )}
 
-                    {currentUser.canDelete && (
-                      <button onClick={() => deleteFile && deleteFile(file.id)} className="text-red-400 hover:text-red-300" title="删除">
+                    {/* 删除按钮：管理员与普通用户均开放（系统根目录禁止删除） */}
+                    {currentUser?.role !== 'guest' && file.id !== 'folder_public_root' && (
+                      <button
+                        onClick={() => deleteFile && deleteFile(file.id, { name: currentUser!.name, username: currentUser!.username })}
+                        className="text-red-400 hover:text-red-300"
+                        title="删除"
+                      >
                         <Trash2 size={14} />
                       </button>
                     )}
@@ -494,7 +565,7 @@ export default function FileCenter() {
               onChange={(e) => setRenamedName(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && renamedName.trim()) {
-                  renameNode(renameModal.id, renamedName.trim());
+                  renameNode(renameModal.id, renamedName.trim(), { name: currentUser!.name, username: currentUser!.username });
                   setRenameModal({ isOpen: false, id: '', oldName: '' });
                 }
               }}
@@ -510,7 +581,7 @@ export default function FileCenter() {
               <button 
                 onClick={() => {
                   if (renamedName.trim()) {
-                    renameNode(renameModal.id, renamedName.trim());
+                    renameNode(renameModal.id, renamedName.trim(), { name: currentUser!.name, username: currentUser!.username });
                     setRenameModal({ isOpen: false, id: '', oldName: '' });
                   }
                 }} 
@@ -520,6 +591,110 @@ export default function FileCenter() {
                 确认修改
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 定向共享人员勾选弹窗 */}
+      {shareModal.isOpen && (
+        <div className="absolute inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="bg-[#252830] border border-gray-700 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+            <div className="flex justify-between items-center mb-3">
+              <h3 className="text-sm font-bold text-gray-100 flex items-center gap-1.5">
+                <Share2 size={16} className="text-blue-400" />
+                指定共享对象
+              </h3>
+              <button onClick={() => setShareModal(prev => ({ ...prev, isOpen: false }))} className="text-gray-400 hover:text-white">
+                <X size={16} />
+              </button>
+            </div>
+            <p className="text-xs text-gray-400 mb-3 truncate">
+              文件: <span className="text-gray-200 font-medium">{shareModal.fileName}</span>
+            </p>
+            <p className="text-[11px] text-gray-500 mb-3">
+              勾选指定用户后，非目标用户将无法在公共空间看到此文件（管理员及创建者始终可见）。若全不勾选则全员可见。
+            </p>
+
+            <div className="space-y-2 max-h-48 overflow-y-auto mb-4 p-2 bg-[#1e2128] rounded-xl border border-gray-700/80">
+              {users.filter(u => u.id !== currentUser?.id).map((u) => {
+                const isSelected = shareModal.sharedWith.includes(u.id);
+                return (
+                  <div
+                    key={u.id}
+                    onClick={() => {
+                      setShareModal(prev => ({
+                        ...prev,
+                        sharedWith: isSelected ? prev.sharedWith.filter(id => id !== u.id) : [...prev.sharedWith, u.id]
+                      }));
+                    }}
+                    className="flex items-center justify-between p-2 rounded-lg hover:bg-[#2b2f3a] cursor-pointer text-xs"
+                  >
+                    <div>
+                      <div className="font-medium text-gray-200">{u.name}</div>
+                      <div className="text-[10px] text-gray-500">@{u.username}</div>
+                    </div>
+                    <span className={`text-xs ${isSelected ? 'text-blue-400 font-bold' : 'text-gray-600'}`}>
+                      {isSelected ? '✓ 已共享' : '+ 共享'}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setShareModal(prev => ({ ...prev, isOpen: false }))}
+                className="px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:bg-[#1e2128]"
+              >
+                取消
+              </button>
+              <button
+                onClick={() => {
+                  updateFileShare(shareModal.fileId, shareModal.sharedWith);
+                  setShareModal(prev => ({ ...prev, isOpen: false }));
+                }}
+                className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium"
+              >
+                确认权限变更
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 管理员操作审计日志抽屉 */}
+      {isLogOpen && (
+        <div className="absolute inset-y-0 right-0 w-96 bg-[#1a1c23] border-l border-gray-800 shadow-2xl z-50 flex flex-col animate-in slide-in-from-right duration-200">
+          <div className="p-4 border-b border-gray-800 flex items-center justify-between">
+            <h3 className="text-sm font-bold text-gray-100 flex items-center gap-2">
+              <ClipboardList size={16} className="text-blue-400" />
+              公共空间操作审计日志
+            </h3>
+            <button onClick={() => setIsLogOpen(false)} className="text-gray-500 hover:text-white">
+              <X size={16} />
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-4 space-y-3">
+            {operationLogs.length === 0 ? (
+              <div className="text-center text-gray-500 text-xs py-16">暂无任何公共空间操作记录</div>
+            ) : (
+              operationLogs.map((log) => (
+                <div key={log.id} className="p-3 bg-[#21242c] border border-gray-800 rounded-xl text-xs space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-gray-200">{log.operatorName} (@{log.operatorUsername})</span>
+                    <span className="text-[10px] text-gray-500">{log.time}</span>
+                  </div>
+                  <div className="text-gray-300 flex items-center gap-1.5">
+                    <span className="text-blue-400 font-medium">[{log.action}]</span>
+                    <span className="truncate">{log.targetName}</span>
+                  </div>
+                  {log.details && (
+                    <div className="text-[11px] text-gray-500">{log.details}</div>
+                  )}
+                </div>
+              ))
+            )}
           </div>
         </div>
       )}
