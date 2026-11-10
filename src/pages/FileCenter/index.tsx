@@ -55,6 +55,13 @@ export default function FileCenter() {
   // 审计日志抽屉状态 (仅 Admin 可见)
   const [isLogOpen, setIsLogOpen] = useState(false);
 
+  // 新增：拖拽移动文件/文件夹的相关状态
+  const [draggedNodeId, setDraggedNodeId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+
+  // 传输队列隔离：仅筛选当前登录用户的传输任务
+  const myTasks = (tasks || []).filter(t => t.userId === currentUser?.id);
+
   // 定向共享设置弹窗状态
   const [shareModal, setShareModal] = useState<{ isOpen: boolean; fileId: string; fileName: string; sharedWith: string[] }>({
     isOpen: false,
@@ -169,7 +176,8 @@ export default function FileCenter() {
           name: file.name,
           size: file.size,
           progress: 0,
-          status: 'uploading'
+          status: 'uploading',
+          userId: currentUser.id // 新增：绑定当前用户
         });
       }
 
@@ -352,15 +360,15 @@ export default function FileCenter() {
             )}
           </div>
 
-          {/* 实时传输队列看板 */}
-          {(tasks || []).length > 0 && (
+          {/* 实时传输队列看板（仅展示当前用户的传输记录） */}
+          {myTasks.length > 0 && (
             <div className="bg-[#2a2d35] p-5 rounded-lg shadow-lg flex-1 overflow-y-auto">
               <div className="flex justify-between items-center mb-3 border-b border-gray-600 pb-2">
                 <h2 className="text-base font-semibold">传输队列</h2>
-                <span className="text-xs text-blue-400">{(tasks || []).filter(t => t.status === 'uploading').length} 个进行中</span>
+                <span className="text-xs text-blue-400">{myTasks.filter(t => t.status === 'uploading').length} 个进行中</span>
               </div>
               <div className="flex flex-col gap-3">
-                {(tasks || []).map(task => (
+                {myTasks.map(task => (
                   <div key={task.id} className="bg-[#1e2128] p-3 rounded border border-gray-700">
                     <div className="flex justify-between items-center mb-1.5">
                       <span className="text-xs truncate pr-3 text-gray-300" title={task.name}>{task.name}</span>
@@ -390,18 +398,48 @@ export default function FileCenter() {
         <div className="lg:col-span-2 bg-[#2a2d35] p-5 rounded-lg shadow-lg flex flex-col overflow-hidden">
           <div className="flex justify-between items-center mb-4 border-b border-gray-600 pb-2">
             <div className="flex items-center text-sm font-semibold text-gray-300">
+              {/* 根目录支持作为拖拽释放目标 */}
               <button 
                 onClick={() => goToBreadcrumb && goToBreadcrumb(-1)} 
-                className={`flex items-center gap-1 hover:text-blue-400 ${currentPath.length === 0 ? 'text-blue-400' : ''}`}
+                onDragOver={(e) => {
+                  if (draggedNodeId && currentPath.length > 0) {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                  }
+                }}
+                onDrop={(e) => {
+                  if (draggedNodeId && currentPath.length > 0) {
+                    e.preventDefault();
+                    moveNode(draggedNodeId, null, { name: currentUser!.name, username: currentUser!.username });
+                    setDraggedNodeId(null);
+                  }
+                }}
+                className={`flex items-center gap-1 hover:text-blue-400 p-1 rounded transition-colors ${currentPath.length === 0 ? 'text-blue-400' : ''}`}
+                title="可将下方文件拖拽至此直接移到根目录"
               >
                 <Home size={16} /> 根目录
               </button>
+
+              {/* 各级面包屑支持作为拖拽目标 */}
               {(currentPath || []).map((node, index) => (
                 <div key={node.id} className="flex items-center">
                   <ChevronRight size={16} className="mx-1 text-gray-500" />
                   <button 
                     onClick={() => goToBreadcrumb && goToBreadcrumb(index)} 
-                    className={`hover:text-blue-400 ${index === currentPath.length - 1 ? 'text-blue-400' : ''}`}
+                    onDragOver={(e) => {
+                      if (draggedNodeId && draggedNodeId !== node.id && index !== currentPath.length - 1) {
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = 'move';
+                      }
+                    }}
+                    onDrop={(e) => {
+                      if (draggedNodeId && draggedNodeId !== node.id && index !== currentPath.length - 1) {
+                        e.preventDefault();
+                        moveNode(draggedNodeId, node.id, { name: currentUser!.name, username: currentUser!.username });
+                        setDraggedNodeId(null);
+                      }
+                    }}
+                    className={`hover:text-blue-400 p-1 rounded transition-colors ${index === currentPath.length - 1 ? 'text-blue-400 font-semibold' : ''}`}
                   >
                     {node.name}
                   </button>
@@ -450,10 +488,63 @@ export default function FileCenter() {
             {displayFiles.length === 0 ? (
               <div className="text-center text-gray-500 py-12 text-sm">当前文件夹为空</div>
             ) : (
-              displayFiles.map((file) => (
-                <div key={file.id} className="grid grid-cols-12 gap-4 items-center text-xs py-3 border-b border-gray-700/60 hover:bg-[#323640] transition-colors group">
+              displayFiles.map((file) => {
+                const isItemDraggable = currentUser?.role !== 'guest' && file.id !== 'folder_public_root';
+                const isDropTarget = file.isFolder && dropTargetId === file.id;
+                const isBeingDragged = draggedNodeId === file.id;
+
+                return (
+                <div 
+                  key={file.id} 
+                  draggable={isItemDraggable}
+                  onDragStart={(e) => {
+                    e.stopPropagation();
+                    e.dataTransfer.setData('text/plain', file.id);
+                    e.dataTransfer.effectAllowed = 'move';
+                    setDraggedNodeId(file.id);
+                  }}
+                  onDragEnd={() => {
+                    setDraggedNodeId(null);
+                    setDropTargetId(null);
+                  }}
+                  onDragOver={(e) => {
+                    // 仅文件夹允许作为释放目标，且不能拖入自身
+                    if (file.isFolder && draggedNodeId && draggedNodeId !== file.id) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      e.dataTransfer.dropEffect = 'move';
+                    }
+                  }}
+                  onDragEnter={(e) => {
+                    if (file.isFolder && draggedNodeId && draggedNodeId !== file.id) {
+                      e.preventDefault();
+                      setDropTargetId(file.id);
+                    }
+                  }}
+                  onDragLeave={() => {
+                    if (file.isFolder && dropTargetId === file.id) {
+                      setDropTargetId(null);
+                    }
+                  }}
+                  onDrop={(e) => {
+                    if (file.isFolder && draggedNodeId && draggedNodeId !== file.id) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      moveNode(draggedNodeId, file.id, { name: currentUser!.name, username: currentUser!.username });
+                      setDraggedNodeId(null);
+                      setDropTargetId(null);
+                    }
+                  }}
+                  className={`grid grid-cols-12 gap-4 items-center text-xs py-3 border-b transition-all group select-none ${
+                    isDropTarget 
+                      ? 'bg-blue-900/40 border-blue-400 shadow-md scale-[1.008] pl-2' 
+                      : 'border-gray-700/60 hover:bg-[#323640]'
+                  } ${isBeingDragged ? 'opacity-35 border-dashed border-gray-500' : ''} ${
+                    isItemDraggable ? 'cursor-grab active:cursor-grabbing' : 'cursor-default'
+                  }`}
+                >
                   <div className="col-span-6 flex items-center gap-2 text-gray-300 truncate pr-2">
-                    {file.isFolder ? <span className="text-yellow-500">📁</span> : <span className="text-blue-400">📄</span>}
+                    {file.isFolder ? <span className="text-yellow-500 text-sm">📁</span> : <span className="text-blue-400 text-sm">📄</span>}
                     <span 
                       className={`truncate ${file.isFolder ? 'cursor-pointer hover:text-blue-400 hover:underline font-medium' : ''}`} 
                       onClick={() => file.isFolder && enterFolder && enterFolder(file.id, file.name)}
@@ -519,7 +610,8 @@ export default function FileCenter() {
                     )}
                   </div>
                 </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>

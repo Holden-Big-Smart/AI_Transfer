@@ -65,7 +65,7 @@ const initialMessage: Message = {
 
 const initialSessionId = `session_${Date.now()}`;
 
-export const useChatStore = create<ChatStore>((set, get) => ({
+export const useChatStore = create<ChatStore>((set) => ({
   sessions: [
     {
       id: initialSessionId,

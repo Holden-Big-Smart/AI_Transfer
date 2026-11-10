@@ -35,6 +35,7 @@ export interface UploadTask {
   size: number;
   progress: number;
   status: 'uploading' | 'success' | 'error';
+  userId?: string; // 新增：标记任务的发起用户 ID
 }
 
 export interface FileStore {
@@ -205,6 +206,18 @@ export const useFileStore = create<FileStore>((set) => ({
     set((state) => {
       const target = state.files.find(f => f.id === id);
       if (!target || id === targetParentId) return state;
+
+      // 防呆检测：禁止将父文件夹移入其自身的子目录中（防止死循环）
+      if (targetParentId) {
+        let currentAncestor: FileNode | undefined = state.files.find(f => f.id === targetParentId);
+        while (currentAncestor) {
+          if (currentAncestor.id === id) {
+            alert('操作无效：不能将文件夹移动到其自身的子文件夹中！');
+            return state;
+          }
+          currentAncestor = state.files.find(f => f.id === currentAncestor?.parentId);
+        }
+      }
 
       const targetParent = state.files.find(f => f.id === targetParentId);
       const isNowPublic = targetParent ? !!targetParent.isPublicFolder : false;
