@@ -42,12 +42,27 @@ export default function UserManagement() {
     e.preventDefault();
     if (!newUsername.trim()) return;
 
-    const { initialPass } = await createUser(newUsername, newName, selectedProjects);
-    setIsAddModalOpen(false);
-    setGeneratedResult({ username: newUsername, pass: initialPass });
-    setNewUsername('');
-    setNewName('');
-    setSelectedProjects(['南方电网']);
+    try {
+      const res = await createUser(newUsername, newName, selectedProjects);
+      setIsAddModalOpen(false);
+      setGeneratedResult({ username: newUsername, pass: res.initialPass });
+      setNewUsername('');
+      setNewName('');
+      setSelectedProjects(['南方电网']);
+    } catch (err) {
+      alert(`创建用户失败: ${err instanceof Error ? err.message : '未知错误'}`);
+    }
+  };
+
+  // 删除账号确认
+  const handleConfirmDelete = async () => {
+    if (!deleteTarget) return;
+    try {
+      await deleteUser(deleteTarget.id);
+      setDeleteTarget(null);
+    } catch (err) {
+      alert(`删除失败: ${err instanceof Error ? err.message : '未知错误'}`);
+    }
   };
 
   const copyToClipboard = () => {
@@ -297,14 +312,7 @@ export default function UserManagement() {
                 取消
               </button>
               <button
-                onClick={async () => {
-                  try {
-                    await deleteUser(deleteTarget.id);
-                  } catch (err) {
-                    alert(err instanceof Error ? err.message : '删除失败');
-                  }
-                  setDeleteTarget(null);
-                }}
+                onClick={handleConfirmDelete}
                 className="px-3.5 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-medium"
               >
                 确认删除
