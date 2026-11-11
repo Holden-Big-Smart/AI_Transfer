@@ -1,6 +1,6 @@
 // src/utils/api.ts
-// 请将此处的 IP 替换为您云服务器的真实公网 IP（注意确保云安全组放行了 8000 端口）
-export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://159.75.137.33:8000';
+// 生产环境同域代理，留空即可；开发模式仍可回退到指定地址
+export const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
 function getAuthHeaders(): HeadersInit {
   const token = localStorage.getItem('access_token');
