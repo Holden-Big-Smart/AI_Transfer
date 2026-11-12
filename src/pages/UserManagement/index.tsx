@@ -116,13 +116,13 @@ export default function UserManagement() {
         </div>
 
         <div className="divide-y divide-gray-700/50 text-xs">
-          {users.map((u) => (
+          {(users || []).map((u) => (
             <div key={u.id} className="grid grid-cols-12 gap-4 px-6 py-4 items-center hover:bg-[#2b2f3a] transition-colors">
               <div className="col-span-3 flex items-center gap-2.5">
                 <div className={`w-8 h-8 rounded-lg flex items-center justify-center font-bold text-xs ${
                   u.role === 'admin' ? 'bg-green-600/20 text-green-400' : 'bg-blue-600/20 text-blue-400'
                 }`}>
-                  {u.name.slice(0, 1)}
+                  {(u.name || u.username || '?').slice(0, 1)}
                 </div>
                 <div>
                   <div className="font-semibold text-gray-200">{u.name}</div>
@@ -143,7 +143,7 @@ export default function UserManagement() {
 
               <div className="col-span-3">
                 <div className="flex flex-wrap gap-1">
-                  {u.allowedProjects.map((p) => (
+                  {(u.allowedProjects || []).map((p) => (
                     <span key={p} className="bg-[#1e2128] text-gray-300 px-2 py-0.5 rounded text-[10px] border border-gray-700">
                       {p}
                     </span>

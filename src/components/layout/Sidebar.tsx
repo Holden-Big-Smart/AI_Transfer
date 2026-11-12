@@ -1,10 +1,10 @@
 // src/components/layout/Sidebar.tsx
 import { NavLink } from 'react-router-dom';
-import { FolderKanban, Bot, ShieldCheck, UserCheck, Eye, Users, LogOut, KeyRound } from 'lucide-react';
+import { FolderKanban, Bot, ShieldCheck, UserCheck, Eye, Users, KeyRound } from 'lucide-react';
 import { useAuthStore } from '../../store/useAuthStore';
 
 export default function Sidebar() {
-  const { currentUser, logout } = useAuthStore();
+  const { currentUser } = useAuthStore();
 
   return (
     <aside className="w-16 bg-[#16181d] border-r border-gray-800 flex flex-col items-center py-5 select-none shrink-0 z-20">
@@ -76,14 +76,6 @@ export default function Sidebar() {
           title="修改当前账号密码"
         >
           <KeyRound size={16} />
-        </button>
-
-        <button
-          onClick={logout}
-          className="p-2 text-gray-500 hover:text-red-400 hover:bg-gray-800 rounded-lg transition-colors"
-          title="退出当前登录"
-        >
-          <LogOut size={16} />
         </button>
       </div>
     </aside>

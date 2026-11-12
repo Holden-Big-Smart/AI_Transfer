@@ -1,6 +1,9 @@
 // src/utils/api.ts
-// 生产环境同域代理，留空即可；开发模式仍可回退到指定地址
-export const API_BASE_URL = import.meta.env.VITE_API_URL || '';
+// 所有接口一律使用以 /api 开头的相对路径：
+// - 开发环境由 vite.config.ts 的 server.proxy 转发到远程服务器
+// - 生产环境由 Nginx 自动转发到后端
+// 这里固定为空字符串，绝不允许出现 http://localhost 之类的绝对地址
+export const API_BASE_URL = '';
 
 function getAuthHeaders(): HeadersInit {
   const token = localStorage.getItem('access_token');
@@ -10,10 +13,24 @@ function getAuthHeaders(): HeadersInit {
   };
 }
 
+// 携带 HTTP 状态码与后端 detail 的请求异常，便于调用方做差异化提示
+export class ApiError extends Error {
+  status: number;
+  detail?: string;
+
+  constructor(message: string, status: number, detail?: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
 async function handleResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({}));
-    throw new Error(errorData.detail || `请求失败: HTTP ${res.status}`);
+    const detail = typeof errorData?.detail === 'string' ? errorData.detail : undefined;
+    throw new ApiError(detail || `请求失败: HTTP ${res.status}`, res.status, detail);
   }
   return res.json();
 }
@@ -82,12 +99,20 @@ export const api = {
         body: JSON.stringify({ virtual_path, new_name, is_public })
       }).then(handleResponse<{ message: string }>),
 
-    move: (source_virtual_path: string, target_virtual_path: string, is_public: boolean) =>
-      fetch(`${API_BASE_URL}/api/files/move`, {
+    // 参数结构与后端 MoveReq 保持一致（源/目标区域分离，支持跨公共与私有区移动）
+    move: (req: { source_virtual_path: string; target_virtual_path: string; source_is_public: boolean; target_is_public: boolean }) => {
+      console.log('--> [API 拦截] 准备发往后端的真实数据:', req);
+      return fetch(`${API_BASE_URL}/api/files/move`, {
         method: 'POST',
         headers: getAuthHeaders(),
-        body: JSON.stringify({ source_virtual_path, target_virtual_path, is_public })
-      }).then(handleResponse<{ message: string }>),
+        body: JSON.stringify({
+          source_virtual_path: req.source_virtual_path,
+          target_virtual_path: req.target_virtual_path,
+          source_is_public: req.source_is_public,
+          target_is_public: req.target_is_public
+        })
+      }).then(handleResponse<{ message: string }>);
+    },
 
     delete: (virtual_path: string, is_public: boolean) => {
       const params = new URLSearchParams({ virtual_path, is_public: String(is_public) });
@@ -97,11 +122,15 @@ export const api = {
       }).then(handleResponse<{ message: string }>);
     },
 
-    setShare: (virtual_path: string, shared_user_ids: string[]) =>
+    // 设置文件定向共享名单
+    setShare: (data: { virtual_path: string; shared_user_ids: string[] }) =>
       fetch(`${API_BASE_URL}/api/files/share`, {
         method: 'POST',
         headers: getAuthHeaders(),
-        body: JSON.stringify({ virtual_path, shared_user_ids })
+        body: JSON.stringify({
+          virtual_path: data.virtual_path,
+          shared_user_ids: data.shared_user_ids
+        })
       }).then(handleResponse<{ message: string }>),
 
     getDownloadUrl: (virtual_path: string, is_public: boolean) => {

@@ -513,17 +513,24 @@ export default function FileCenter() {
                       e.preventDefault();
                       e.stopPropagation();
                       e.dataTransfer.dropEffect = 'move';
+                      // 【关键修复1】：通过条件判断阻断无限 Re-render，解决卡顿
+                      if (dropTargetId !== file.id) {
+                        setDropTargetId(file.id);
+                      }
                     }
                   }}
                   onDragEnter={(e) => {
+                    // 【关键修复2】：废弃此处的 setDropTargetId 状态更新，交由 onDragOver 节流处理
                     if (file.isFolder && draggedNodeId && draggedNodeId !== file.id) {
                       e.preventDefault();
-                      setDropTargetId(file.id);
                     }
                   }}
-                  onDragLeave={() => {
+                  onDragLeave={(e) => {
                     if (file.isFolder && dropTargetId === file.id) {
-                      setDropTargetId(null);
+                      // 【关键修复3】：校验鼠标是否真正离开了当前行，排除经过子元素时的误触发
+                      if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                        setDropTargetId(null);
+                      }
                     }
                   }}
                   onDrop={(e) => {
@@ -715,7 +722,7 @@ export default function FileCenter() {
             </p>
 
             <div className="space-y-2 max-h-48 overflow-y-auto mb-4 p-2 bg-[#1e2128] rounded-xl border border-gray-700/80">
-              {users.filter(u => u.id !== currentUser?.id).map((u) => {
+              {(users || []).filter(u => u.id !== currentUser?.id).map((u) => {
                 const isSelected = shareModal.sharedWith.includes(u.id);
                 return (
                   <div
