@@ -196,10 +196,15 @@ export const api = {
 
   // === 云端笔记接口 ===
   notes: {
+    getVersion: () =>
+      fetch(`${API_BASE_URL}/api/notes/version`, {
+        headers: getAuthHeaders()
+      }).then(handleResponse<{ version: string }>),
+
     getAll: () =>
       fetch(`${API_BASE_URL}/api/notes/all`, {
         headers: getAuthHeaders()
-      }).then(handleResponse<{ folders: NoteFolder[]; notes: NoteItem[] }>),
+      }).then(handleResponse<{ folders: NoteFolder[]; notes: NoteItem[]; version?: string }>),
 
     createFolder: (name: string) =>
       fetch(`${API_BASE_URL}/api/notes/folder`, {
