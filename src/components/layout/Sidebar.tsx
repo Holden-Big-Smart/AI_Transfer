@@ -1,10 +1,10 @@
 // src/components/layout/Sidebar.tsx
 import { NavLink } from 'react-router-dom';
-import { FolderKanban, Bot, ShieldCheck, UserCheck, Eye, Users, KeyRound } from 'lucide-react';
+import { FolderKanban, Bot, NotebookPen, ShieldCheck, UserCheck, Eye, Users, KeyRound, LogOut } from 'lucide-react';
 import { useAuthStore } from '../../store/useAuthStore';
 
 export default function Sidebar() {
-  const { currentUser } = useAuthStore();
+  const { currentUser, logout } = useAuthStore();
 
   return (
     <aside className="w-16 bg-[#16181d] border-r border-gray-800 flex flex-col items-center py-5 select-none shrink-0 z-20">
@@ -39,6 +39,22 @@ export default function Sidebar() {
           <span className="text-[10px]">助手</span>
         </NavLink>
 
+        {/* 新增：跨设备云端笔记入口（非访客可用） */}
+        {currentUser?.role !== 'guest' && (
+          <NavLink
+            to="/notes"
+            className={({ isActive }) =>
+              `flex flex-col items-center justify-center py-3 rounded-xl transition-all ${
+                isActive ? 'bg-blue-600/15 text-blue-400 font-medium' : 'text-gray-400 hover:bg-gray-800/60 hover:text-gray-200'
+              }`
+            }
+            title="跨端代码与富文本笔记"
+          >
+            <NotebookPen size={20} className="mb-1" />
+            <span className="text-[10px]">笔记</span>
+          </NavLink>
+        )}
+
         {/* 仅管理员显示“用户管理”菜单 */}
         {currentUser?.role === 'admin' && (
           <NavLink
@@ -70,12 +86,22 @@ export default function Sidebar() {
           </span>
         </div>
 
+        {currentUser?.role !== 'guest' && (
+          <button
+            onClick={() => window.dispatchEvent(new CustomEvent('open_change_pwd_modal'))}
+            className="p-2 text-gray-500 hover:text-yellow-400 hover:bg-gray-800 rounded-lg transition-colors"
+            title="修改当前账号密码"
+          >
+            <KeyRound size={16} />
+          </button>
+        )}
+
         <button
-          onClick={() => window.dispatchEvent(new CustomEvent('open_change_pwd_modal'))}
-          className="p-2 text-gray-500 hover:text-yellow-400 hover:bg-gray-800 rounded-lg transition-colors"
-          title="修改当前账号密码"
+          onClick={logout}
+          className="p-2 text-gray-500 hover:text-red-400 hover:bg-gray-800 rounded-lg transition-colors"
+          title="退出登录"
         >
-          <KeyRound size={16} />
+          <LogOut size={16} />
         </button>
       </div>
     </aside>

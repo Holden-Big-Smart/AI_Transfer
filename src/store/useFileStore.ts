@@ -54,7 +54,7 @@ export interface FileStore {
   addFile: (file: FileNode, operator?: { name: string; username: string }) => void;
   renameNode: (id: string, newName: string, operator?: { name: string; username: string }) => void;
   moveNode: (id: string, targetParentId: string | null, operator?: { name: string; username: string }) => Promise<void>;
-  updateFileShare: (id: string, sharedWithUserIds: string[]) => Promise<void>; // 新增：更新指定共享
+  updateFileShare: (ids: string | string[], sharedWithUserIds: string[]) => Promise<void>; // 新增：更新指定共享（支持批量）
   loadServerFiles: (isPublic: boolean, subPath?: string) => Promise<void>;
   loadAuditLogs: () => Promise<void>;
   setClipboard: (item: { id: string; action: 'cut' | 'copy' } | null) => void;
@@ -273,27 +273,26 @@ export const useFileStore = create<FileStore>((set, get) => ({
     }
   },
 
-  updateFileShare: async (id, sharedWithUserIds) => {
+  updateFileShare: async (ids, sharedWithUserIds) => {
     const state = get();
-    const targetFile = state.files.find(f => f.id === id);
-    if (!targetFile) return;
+    const targetIds = Array.isArray(ids) ? ids : [ids];
+    const targetFiles = state.files.filter((f) => targetIds.includes(f.id));
+    if (targetFiles.length === 0) return;
 
-    // 虚拟路径解析
-    const virtualPath = targetFile.virtualPath || targetFile.name;
+    const virtualPaths = targetFiles.map((f) => f.virtualPath || f.name);
 
     try {
-      // 1. 发送真实请求给后端
       await api.files.setShare({
-        virtual_path: virtualPath,
+        virtual_paths: virtualPaths,
         shared_user_ids: sharedWithUserIds
       });
 
-      // 2. 后端成功后，更新前端状态树画面
-      set((state) => ({
-        files: state.files.map((f) => (f.id === id ? { ...f, sharedWith: sharedWithUserIds } : f))
+      const idSet = new Set(targetIds);
+      set((s) => ({
+        files: s.files.map((f) => (idSet.has(f.id) ? { ...f, sharedWith: sharedWithUserIds } : f))
       }));
 
-      alert('共享权限已更新生效！');
+      if (state.loadAuditLogs) state.loadAuditLogs();
     } catch (err) {
       console.error('更新共享失败:', err);
       const detail = err instanceof ApiError ? err.detail : undefined;

@@ -1,4 +1,6 @@
 // src/utils/api.ts
+import type { CodePage, NoteFolder, NoteItem } from '../types/note';
+
 // 所有接口一律使用以 /api 开头的相对路径：
 // - 开发环境由 vite.config.ts 的 server.proxy 转发到远程服务器
 // - 生产环境由 Nginx 自动转发到后端
@@ -122,29 +124,33 @@ export const api = {
       }).then(handleResponse<{ message: string }>);
     },
 
-    // 设置文件定向共享名单
-    setShare: (data: { virtual_path: string; shared_user_ids: string[] }) =>
+    // 获取可共享的用户列表
+    getShareableUsers: () =>
+      fetch(`${API_BASE_URL}/api/files/shareable-users`, {
+        headers: getAuthHeaders()
+      }).then(handleResponse<Array<{ id: string; username: string; name: string; role: string }>>),
+
+    // 设置单文件或批量文件定向共享名单（shared_user_ids 包含 'ALL' 代表所有人及访客可见）
+    setShare: (data: { virtual_path?: string; virtual_paths?: string[]; shared_user_ids: string[] }) =>
       fetch(`${API_BASE_URL}/api/files/share`, {
         method: 'POST',
         headers: getAuthHeaders(),
-        body: JSON.stringify({
-          virtual_path: data.virtual_path,
-          shared_user_ids: data.shared_user_ids
-        })
+        body: JSON.stringify(data)
       }).then(handleResponse<{ message: string }>),
 
     getDownloadUrl: (virtual_path: string, is_public: boolean) => {
-      const token = localStorage.getItem('access_token');
+      const token = localStorage.getItem('access_token') || '';
       const params = new URLSearchParams({ virtual_path, is_public: String(is_public) });
       return `${API_BASE_URL}/api/files/download?${params.toString()}&token=${token}`;
     },
 
-    // 真实分片上传与落盘
+    // 真实分片上传与落盘（新增 relativePath 参数以保持完整文件夹层级结构）
     uploadFileWithChunks: async (
       file: File,
       parentPath: string,
       isPublic: boolean,
-      onProgress: (percent: number) => void
+      onProgress: (percent: number) => void,
+      relativePath?: string
     ) => {
       const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB 一个分片
       const totalChunks = Math.ceil(file.size / CHUNK_SIZE) || 1;
@@ -179,12 +185,53 @@ export const api = {
         body: JSON.stringify({
           upload_id: uploadId,
           filename: file.name,
+          relative_path: relativePath || file.name,
           parent_path: parentPath,
           is_public: isPublic,
           total_chunks: totalChunks
         })
       }).then(handleResponse<{ message: string }>);
     }
+  },
+
+  // === 云端笔记接口 ===
+  notes: {
+    getAll: () =>
+      fetch(`${API_BASE_URL}/api/notes/all`, {
+        headers: getAuthHeaders()
+      }).then(handleResponse<{ folders: NoteFolder[]; notes: NoteItem[] }>),
+
+    createFolder: (name: string) =>
+      fetch(`${API_BASE_URL}/api/notes/folder`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ name })
+      }).then(handleResponse<NoteFolder>),
+
+    deleteFolder: (folderId: string) =>
+      fetch(`${API_BASE_URL}/api/notes/folder/${folderId}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders()
+      }).then(handleResponse<{ message: string }>),
+
+    save: (data: {
+      id?: string;
+      folder_id: string | null;
+      title: string;
+      content: string;
+      code_pages: CodePage[];
+    }) =>
+      fetch(`${API_BASE_URL}/api/notes/save`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(data)
+      }).then(handleResponse<NoteItem>),
+
+    deleteNote: (noteId: string) =>
+      fetch(`${API_BASE_URL}/api/notes/item/${noteId}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders()
+      }).then(handleResponse<{ message: string }>)
   },
 
   // === 审计接口 ===

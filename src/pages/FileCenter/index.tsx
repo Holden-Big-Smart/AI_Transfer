@@ -3,13 +3,19 @@ import { useState, useRef, useEffect } from 'react';
 import { api } from '../../utils/api';
 import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts';
 import { 
-  LogOut, UploadCloud, FolderPlus, Download, Trash2, Home, 
+  UploadCloud, FolderPlus, Download, Trash2, Home, 
   ChevronRight, X, CheckCircle2, Clock, HardDrive, FileUp, FolderUp,
   Edit2, Scissors, ClipboardPaste, Share2, ClipboardList,
-  PieChart as PieChartIcon
+  PieChart as PieChartIcon, Globe, Lock, CheckSquare, Square
 } from 'lucide-react';
 import { useFileStore } from '../../store/useFileStore';
 import { useAuthStore } from '../../store/useAuthStore';
+
+// 新增：携带相对路径的待传文件项接口（用于保持整个文件夹层级结构）
+interface StagedItem {
+  file: File;
+  relativePath: string;
+}
 
 // 字节单位格式化
 const formatBytes = (bytes: number | null) => {
@@ -42,7 +48,7 @@ const formatQuotaPercent = (bytes: number) => {
 };
 
 export default function FileCenter() {
-  const { currentUser, users, logout } = useAuthStore();
+  const { currentUser } = useAuthStore();
   const { 
     files = [], 
     currentPath = [], 
@@ -61,14 +67,18 @@ export default function FileCenter() {
   const [draggedNodeId, setDraggedNodeId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
 
+  // 可共享用户列表与多选批量共享状态
+  const [shareableUsers, setShareableUsers] = useState<Array<{ id: string; username: string; name: string; role: string }>>([]);
+  const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
+
   // 传输队列隔离：仅筛选当前登录用户的传输任务
   const myTasks = (tasks || []).filter(t => t.userId === currentUser?.id);
 
-  // 定向共享设置弹窗状态
-  const [shareModal, setShareModal] = useState<{ isOpen: boolean; fileId: string; fileName: string; sharedWith: string[] }>({
+  // 定向共享 / 批量共享弹窗状态（targetIds 支持单选或多选）
+  const [shareModal, setShareModal] = useState<{ isOpen: boolean; targetIds: string[]; titleText: string; sharedWith: string[] }>({
     isOpen: false,
-    fileId: '',
-    fileName: '',
+    targetIds: [],
+    titleText: '',
     sharedWith: []
   });
 
@@ -77,34 +87,32 @@ export default function FileCenter() {
   const currentParentNode = files.find(f => f.id === currentFolderId);
   const isInPublicSpace = currentFolderId === 'folder_public_root' || !!currentParentNode?.isPublicFolder;
 
-  // === 核心逻辑：数据隔离与可见性过滤 ===
+  // 后端已完成严密的权限过滤，前端直接展示当前目录层级下的节点（访客在根目录仅展示公共空间入口）
   const displayFiles = files.filter((file) => {
-    // 1. 必须处于当前层级
     if (file.parentId !== currentFolderId) return false;
-
-    // 2. 如果在公共空间下：
-    if (isInPublicSpace || file.id === 'folder_public_root') {
-      if (file.id === 'folder_public_root') return true; // 公共根目录所有人可见
-      if (currentUser?.role === 'admin') return true;    // 管理员在公共空间穿透可见
-      if (file.ownerId === currentUser?.id) return true; // 上传者本人可见
-      // 如果未配置定向共享，则所有人可见；否则仅列表内的用户可见
-      if (!file.sharedWith || file.sharedWith.length === 0) return true;
-      return file.sharedWith.includes(currentUser?.id || '');
+    if (!isInPublicSpace && currentUser?.role === 'guest') {
+      return file.id === 'folder_public_root';
     }
-
-    // 3. 如果在私有个人空间下：实现严格隔离（管理员也只能看到自己的私有文件）
-    return file.ownerId === currentUser?.id;
+    return true;
   });
 
-  // 当路径切换或组件初次挂载时，从云端拉取真实文件与审计日志
+  // 切换目录时清空多选勾选并拉取服务器最新文件
   useEffect(() => {
-    if (currentUser && currentUser.role !== 'guest') {
-      const virtualSubPath = currentFolderId && currentFolderId !== 'folder_public_root'
-        ? currentFolderId.replace(/^(pub_|pri_)/, '')
-        : '';
-      loadServerFiles(isInPublicSpace, virtualSubPath);
-      if (currentUser.role === 'admin') loadAuditLogs();
+    setSelectedFileIds([]);
+    if (!currentUser) return;
+
+    if (currentUser.role !== 'guest') {
+      api.files.getShareableUsers().then(setShareableUsers).catch(() => {});
     }
+
+    // 访客仅在进入公共空间时拉取数据
+    if (currentUser.role === 'guest' && !isInPublicSpace) return;
+
+    const virtualSubPath = currentFolderId && currentFolderId !== 'folder_public_root'
+      ? currentFolderId.replace(/^(pub_|pri_)/, '')
+      : '';
+    loadServerFiles(isInPublicSpace, virtualSubPath);
+    if (currentUser.role === 'admin') loadAuditLogs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentFolderId, isInPublicSpace, currentUser]);
 
@@ -120,29 +128,48 @@ export default function FileCenter() {
   });
   const [renamedName, setRenamedName] = useState('');
   
-  // 待上传文件暂存队列
-  const [stagedFiles, setStagedFiles] = useState<File[]>([]);
+  // 待上传队列（保留完整文件夹相对路径）
+  const [stagedItems, setStagedItems] = useState<StagedItem[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
 
-  // 计算暂存队列指标
-  const totalStagedBytes = stagedFiles.reduce((acc, f) => acc + f.size, 0);
+  const totalStagedBytes = stagedItems.reduce((acc, item) => acc + item.file.size, 0);
 
-  // 递归解析拖入的文件夹或文件
-  const scanEntry = async (entry: any): Promise<File[]> => {
+  // 统计待上传队列中的顶层项目（将同一文件夹聚合成一项展示）
+  const stagedSummaryGroups = (() => {
+    const groups = new Map<string, { isFolder: boolean; count: number; size: number }>();
+    for (const item of stagedItems) {
+      const parts = item.relativePath.split('/');
+      const topName = parts[0];
+      const isFolder = parts.length > 1;
+      const prev = groups.get(topName) || { isFolder, count: 0, size: 0 };
+      groups.set(topName, {
+        isFolder: prev.isFolder || isFolder,
+        count: prev.count + 1,
+        size: prev.size + item.file.size
+      });
+    }
+    return Array.from(groups.entries());
+  })();
+
+  // 递归解析拖入的文件夹并保留相对层级路径
+  const scanEntry = async (entry: any, prefix = ''): Promise<StagedItem[]> => {
     if (!entry) return [];
     if (entry.isFile) {
       return new Promise((resolve) => {
-        entry.file((file: File) => resolve([file]));
+        entry.file((file: File) => resolve([{ file, relativePath: `${prefix}${file.name}` }]));
       });
     } else if (entry.isDirectory) {
       const dirReader = entry.createReader();
-      return new Promise((resolve) => {
-        dirReader.readEntries(async (entries: any[]) => {
-          const results = await Promise.all(entries.map((e) => scanEntry(e)));
-          resolve(results.flat());
-        });
-      });
+      const readAllEntries = async (): Promise<any[]> => {
+        const batch: any[] = await new Promise((res) => dirReader.readEntries(res));
+        if (batch.length === 0) return [];
+        const rest = await readAllEntries();
+        return [...batch, ...rest];
+      };
+      const entries = await readAllEntries();
+      const results = await Promise.all(entries.map((e) => scanEntry(e, `${prefix}${entry.name}/`)));
+      return results.flat();
     }
     return [];
   };
@@ -163,58 +190,79 @@ export default function FileCenter() {
         const entry = items[i].webkitGetAsEntry();
         if (entry) entries.push(entry);
       }
-      const filesArray = await Promise.all(entries.map(scanEntry));
-      const flatFiles = filesArray.flat();
-      setStagedFiles((prev) => [...prev, ...flatFiles]);
+      const scanned = await Promise.all(entries.map((ent) => scanEntry(ent, '')));
+      setStagedItems((prev) => [...prev, ...scanned.flat()]);
     }
   };
 
-  // 文件/文件夹选择监听
+  // 选择文件或选择整个文件夹监听（保留 webkitRelativePath）
   const handleNativeFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      const selected = Array.from(e.target.files);
-      setStagedFiles((prev) => [...prev, ...selected]);
+      const selected: StagedItem[] = Array.from(e.target.files).map((file) => ({
+        file,
+        relativePath: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name
+      }));
+      setStagedItems((prev) => [...prev, ...selected]);
     }
+    e.target.value = '';
   };
 
-  // 触发真实/模拟上传
+  // 按顶层文件夹/单文件聚合上传（整个文件夹合并为一个任务并在后端还原完整目录树）
   const handleStartUpload = async () => {
-    if (stagedFiles.length === 0 || !currentUser) return;
+    if (stagedItems.length === 0 || !currentUser) return;
 
     const virtualParent = currentFolderId && currentFolderId !== 'folder_public_root'
       ? currentFolderId.replace(/^(pub_|pri_)/, '')
       : '';
 
-    // 遍历待上传文件列表执行真实切片上传
-    stagedFiles.forEach(async (file) => {
+    // 将待传列表按顶层名称分组（同一文件夹作为单个整体任务上传）
+    const taskGroups = new Map<string, StagedItem[]>();
+    for (const item of stagedItems) {
+      const topName = item.relativePath.split('/')[0];
+      const list = taskGroups.get(topName) || [];
+      list.push(item);
+      taskGroups.set(topName, list);
+    }
+
+    setStagedItems([]);
+
+    for (const [topName, groupItems] of taskGroups.entries()) {
+      const isFolderGroup = groupItems.length > 1 || groupItems[0].relativePath.includes('/');
+      const totalGroupSize = groupItems.reduce((acc, cur) => acc + cur.file.size, 0);
       const taskId = `task_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
       addTask({
         id: taskId,
-        name: file.name,
-        size: file.size,
+        name: isFolderGroup ? `📁 ${topName} (共 ${groupItems.length} 个文件)` : topName,
+        size: totalGroupSize,
         progress: 0,
         status: 'uploading',
         userId: currentUser.id
       });
 
       try {
-        await api.files.uploadFileWithChunks(
-          file,
-          virtualParent,
-          isInPublicSpace,
-          (percent) => updateTaskProgress(taskId, percent)
-        );
+        for (let i = 0; i < groupItems.length; i++) {
+          const { file, relativePath } = groupItems[i];
+          await api.files.uploadFileWithChunks(
+            file,
+            virtualParent,
+            isInPublicSpace,
+            (filePercent) => {
+              const overallPercent = Math.round(((i + filePercent / 100) / groupItems.length) * 100);
+              updateTaskProgress(taskId, overallPercent);
+            },
+            relativePath
+          );
+        }
         updateTaskProgress(taskId, 100, 'success');
-        // 成功后重新拉取当前目录，获取服务器落盘后的真实节点
         loadServerFiles(isInPublicSpace, virtualParent);
+        if (isInPublicSpace && currentUser.role === 'admin') loadAuditLogs();
       } catch (err) {
         console.error('上传失败', err);
         updateTaskProgress(taskId, 0, 'error');
-        alert(`文件 [${file.name}] 上传失败: ${err instanceof Error ? err.message : '未知错误'}`);
+        alert(`[${topName}] 上传失败: ${err instanceof Error ? err.message : '未知错误'}`);
       }
-    });
-
-    setStagedFiles([]);
+    }
   };
 
   const handleCreateFolder = () => {
@@ -254,15 +302,9 @@ export default function FileCenter() {
         {...({ webkitdirectory: '', directory: '' } as any)}
       />
 
-      {/* 顶部导航 */}
+      {/* 顶部导航（已移除右上角退出登录，统一由左下角 Sidebar 退出） */}
       <header className="flex justify-between items-center mb-6">
         <h1 className="text-2xl font-bold text-blue-400">文件管理中心</h1>
-        <button
-          onClick={logout}
-          className="flex items-center gap-2 bg-red-600 hover:bg-red-700 px-4 py-2 rounded text-sm transition-colors"
-        >
-          <LogOut size={16} /> 退出登录
-        </button>
       </header>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 flex-1 overflow-hidden">
@@ -319,17 +361,28 @@ export default function FileCenter() {
               </button>
             </div>
 
-            {/* 待上传暂存信息看板 */}
-            {stagedFiles.length > 0 && (
+            {/* 待上传暂存信息看板（支持整包文件夹聚合预览） */}
+            {stagedItems.length > 0 && (
               <div className="bg-[#1e2128] border border-blue-500/30 rounded-lg p-3 mb-3">
                 <div className="flex justify-between items-center mb-2">
-                  <span className="text-xs font-semibold text-blue-400">待上传队列 ({stagedFiles.length} 项)</span>
+                  <span className="text-xs font-semibold text-blue-400">
+                    待上传 ({stagedSummaryGroups.length} 项 / 共 {stagedItems.length} 个文件)
+                  </span>
                   <button 
-                    onClick={() => setStagedFiles([])}
+                    onClick={() => setStagedItems([])}
                     className="text-xs text-gray-400 hover:text-red-400"
                   >
                     清空
                   </button>
+                </div>
+
+                <div className="max-h-24 overflow-y-auto mb-2 space-y-1 pr-1">
+                  {stagedSummaryGroups.map(([name, info]) => (
+                    <div key={name} className="flex items-center justify-between text-[11px] text-gray-300 bg-[#252830] px-2 py-1 rounded">
+                      <span className="truncate">{info.isFolder ? `📁 ${name} (${info.count}个文件)` : `📄 ${name}`}</span>
+                      <span className="text-gray-500 shrink-0 ml-2">{formatBytes(info.size)}</span>
+                    </div>
+                  ))}
                 </div>
                 
                 {/* 传输总大小、配额占比、耗时指标 */}
@@ -354,7 +407,7 @@ export default function FileCenter() {
                   disabled={currentUser?.role === 'guest'}
                   className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white font-medium py-2 rounded text-xs transition-colors shadow-md"
                 >
-                  {currentUser?.role !== 'guest' ? `确认开始传送 (${stagedFiles.length} 个项目)` : '只读访客无上传权限'}
+                  {currentUser?.role !== 'guest' ? `确认开始传送 (${stagedSummaryGroups.length} 项)` : '只读访客无上传权限'}
                 </button>
               </div>
             )}
@@ -458,6 +511,24 @@ export default function FileCenter() {
                 </button>
               )}
 
+              {/* 公共空间下勾选了文件时，显示批量共享按钮 */}
+              {isInPublicSpace && selectedFileIds.length > 0 && currentUser?.role !== 'guest' && (
+                <button
+                  onClick={() =>
+                    setShareModal({
+                      isOpen: true,
+                      targetIds: selectedFileIds,
+                      titleText: `已选中的 ${selectedFileIds.length} 个项目`,
+                      sharedWith: []
+                    })
+                  }
+                  className="text-blue-300 hover:text-white flex items-center gap-1 text-xs bg-blue-600/30 border border-blue-500/50 px-2.5 py-1.5 rounded transition-colors"
+                >
+                  <Share2 size={14} />
+                  <span>批量共享 ({selectedFileIds.length})</span>
+                </button>
+              )}
+
               {clipboard && (
                 <button
                   onClick={() => moveNode(clipboard.id, currentFolderId, { name: currentUser!.name, username: currentUser!.username })}
@@ -477,8 +548,26 @@ export default function FileCenter() {
             </div>
           </div>
 
-          <div className="grid grid-cols-12 gap-4 text-xs text-gray-400 font-semibold border-b border-gray-700 pb-2 mb-2">
-            <div className="col-span-6">文件名</div>
+          <div className="grid grid-cols-12 gap-4 text-xs text-gray-400 font-semibold border-b border-gray-700 pb-2 mb-2 items-center">
+            <div className="col-span-6 flex items-center gap-2">
+              {isInPublicSpace && currentUser?.role !== 'guest' && displayFiles.length > 0 && (
+                <button
+                  onClick={() => {
+                    const selectableIds = displayFiles
+                      .filter(f => f.id !== 'folder_public_root' && (f.ownerId === currentUser?.id || currentUser?.role === 'admin'))
+                      .map(f => f.id);
+                    setSelectedFileIds(selectedFileIds.length === selectableIds.length ? [] : selectableIds);
+                  }}
+                  className="text-gray-400 hover:text-white"
+                  title="全选/取消全选可管理的公共文件"
+                >
+                  {selectedFileIds.length > 0 && selectedFileIds.length === displayFiles.filter(f => f.id !== 'folder_public_root' && (f.ownerId === currentUser?.id || currentUser?.role === 'admin')).length
+                    ? <CheckSquare size={14} className="text-blue-400" />
+                    : <Square size={14} />}
+                </button>
+              )}
+              <span>文件名</span>
+            </div>
             <div className="col-span-2">大小</div>
             <div className="col-span-2">上传时间</div>
             <div className="col-span-2 text-right">操作</div>
@@ -551,6 +640,25 @@ export default function FileCenter() {
                   }`}
                 >
                   <div className="col-span-6 flex items-center gap-2 text-gray-300 truncate pr-2">
+                    {/* 公共空间下支持勾选文件进行批量共享 */}
+                    {isInPublicSpace && file.id !== 'folder_public_root' && (file.ownerId === currentUser?.id || currentUser?.role === 'admin') && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedFileIds((prev) =>
+                            prev.includes(file.id) ? prev.filter((id) => id !== file.id) : [...prev, file.id]
+                          );
+                        }}
+                        className="text-gray-400 hover:text-blue-400 shrink-0"
+                      >
+                        {selectedFileIds.includes(file.id) ? (
+                          <CheckSquare size={14} className="text-blue-400" />
+                        ) : (
+                          <Square size={14} />
+                        )}
+                      </button>
+                    )}
+
                     {file.isFolder ? <span className="text-yellow-500 text-sm">📁</span> : <span className="text-blue-400 text-sm">📄</span>}
                     <span 
                       className={`truncate ${file.isFolder ? 'cursor-pointer hover:text-blue-400 hover:underline font-medium' : ''}`} 
@@ -558,6 +666,23 @@ export default function FileCenter() {
                     >
                       {file.name}
                     </span>
+
+                    {/* 公共空间内显示当前文件的可见性权限角标 */}
+                    {isInPublicSpace && file.id !== 'folder_public_root' && (
+                      file.sharedWith?.includes('ALL') ? (
+                        <span className="text-[10px] bg-green-950/60 text-green-400 border border-green-700/50 px-1.5 py-0.5 rounded shrink-0 flex items-center gap-0.5">
+                          <Globe size={10} /> 所有人可见
+                        </span>
+                      ) : file.sharedWith && file.sharedWith.length > 0 ? (
+                        <span className="text-[10px] bg-blue-950/60 text-blue-400 border border-blue-700/50 px-1.5 py-0.5 rounded shrink-0">
+                          指定 {file.sharedWith.length} 人
+                        </span>
+                      ) : (
+                        <span className="text-[10px] bg-gray-800 text-gray-400 border border-gray-700 px-1.5 py-0.5 rounded shrink-0 flex items-center gap-0.5">
+                          <Lock size={10} /> 仅自己可见
+                        </span>
+                      )
+                    )}
                   </div>
                   <div className="col-span-2 text-gray-400">{formatBytes(file.size)}</div>
                   <div className="col-span-2 text-gray-500">{file.uploadTime}</div>
@@ -573,17 +698,17 @@ export default function FileCenter() {
                       <Download size={14} />
                     </button>
 
-                    {/* 在公共空间下，允许作者或管理员配置指定共享 */}
+                    {/* 在公共空间下，允许作者或管理员配置共享权限 */}
                     {isInPublicSpace && file.id !== 'folder_public_root' && (file.ownerId === currentUser?.id || currentUser?.role === 'admin') && (
                       <button
                         onClick={() => setShareModal({
                           isOpen: true,
-                          fileId: file.id,
-                          fileName: file.name,
+                          targetIds: [file.id],
+                          titleText: file.name,
                           sharedWith: file.sharedWith || []
                         })}
                         className={`hover:text-blue-400 ${file.sharedWith && file.sharedWith.length > 0 ? 'text-blue-400' : 'text-gray-400'}`}
-                        title={file.sharedWith && file.sharedWith.length > 0 ? `已指定 ${file.sharedWith.length} 人可见` : '全员可见 (点击指定共享)'}
+                        title="设置共享权限（仅自己 / 指定用户 / 所有人及访客可见）"
                       >
                         <Share2 size={13} />
                       </button>
@@ -701,37 +826,78 @@ export default function FileCenter() {
         </div>
       )}
 
-      {/* 定向共享人员勾选弹窗 */}
+      {/* 定向共享 / 批量共享权限设置弹窗 */}
       {shareModal.isOpen && (
         <div className="absolute inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
           <div className="bg-[#252830] border border-gray-700 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
             <div className="flex justify-between items-center mb-3">
               <h3 className="text-sm font-bold text-gray-100 flex items-center gap-1.5">
                 <Share2 size={16} className="text-blue-400" />
-                指定共享对象
+                设置公共空间访问权限
               </h3>
               <button onClick={() => setShareModal(prev => ({ ...prev, isOpen: false }))} className="text-gray-400 hover:text-white">
                 <X size={16} />
               </button>
             </div>
             <p className="text-xs text-gray-400 mb-3 truncate">
-              文件: <span className="text-gray-200 font-medium">{shareModal.fileName}</span>
-            </p>
-            <p className="text-[11px] text-gray-500 mb-3">
-              勾选指定用户后，非目标用户将无法在公共空间看到此文件（管理员及创建者始终可见）。若全不勾选则全员可见。
+              目标: <span className="text-gray-200 font-medium">{shareModal.titleText}</span>
             </p>
 
-            <div className="space-y-2 max-h-48 overflow-y-auto mb-4 p-2 bg-[#1e2128] rounded-xl border border-gray-700/80">
-              {(users || []).filter(u => u.id !== currentUser?.id).map((u) => {
-                const isSelected = shareModal.sharedWith.includes(u.id);
+            {/* 开关 1：所有人可见（开启后公共访客与所有用户均可见） */}
+            <div
+              onClick={() => {
+                const isAll = shareModal.sharedWith.includes('ALL');
+                setShareModal((prev) => ({
+                  ...prev,
+                  sharedWith: isAll ? [] : ['ALL']
+                }));
+              }}
+              className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer mb-3 transition-colors ${
+                shareModal.sharedWith.includes('ALL')
+                  ? 'bg-green-950/30 border-green-500/50 text-green-300'
+                  : 'bg-[#1e2128] border-gray-700 text-gray-300 hover:border-gray-600'
+              }`}
+            >
+              <div className="flex items-center gap-2.5">
+                <Globe size={16} className={shareModal.sharedWith.includes('ALL') ? 'text-green-400' : 'text-gray-500'} />
+                <div>
+                  <div className="text-xs font-semibold">所有人可见 (含公共访客)</div>
+                  <div className="text-[10px] text-gray-400">开启后访客及全体成员均可查看与下载</div>
+                </div>
+              </div>
+              <span className="text-xs font-bold">
+                {shareModal.sharedWith.includes('ALL') ? '✓ 已开启' : '未开启'}
+              </span>
+            </div>
+
+            {/* 列表 2：指定内部用户可见 */}
+            <div className="flex items-center justify-between text-[11px] text-gray-400 mb-1.5">
+              <span>或指定特定成员可见 (全不选则仅自己可见):</span>
+              {shareModal.sharedWith.length > 0 && (
+                <button
+                  onClick={() => setShareModal(prev => ({ ...prev, sharedWith: [] }))}
+                  className="text-red-400 hover:underline"
+                >
+                  设为仅自己可见
+                </button>
+              )}
+            </div>
+
+            <div className="space-y-2 max-h-44 overflow-y-auto mb-4 p-2 bg-[#1e2128] rounded-xl border border-gray-700/80">
+              {shareableUsers.filter(u => u.id !== currentUser?.id).map((u) => {
+                const isAll = shareModal.sharedWith.includes('ALL');
+                const isSelected = isAll || shareModal.sharedWith.includes(u.id);
                 return (
                   <div
                     key={u.id}
                     onClick={() => {
-                      setShareModal(prev => ({
-                        ...prev,
-                        sharedWith: isSelected ? prev.sharedWith.filter(id => id !== u.id) : [...prev.sharedWith, u.id]
-                      }));
+                      setShareModal(prev => {
+                        const withoutAll = prev.sharedWith.filter(id => id !== 'ALL');
+                        const next = withoutAll.includes(u.id)
+                          ? withoutAll.filter(id => id !== u.id)
+                          : [...withoutAll, u.id];
+                        return { ...prev, sharedWith: next };
+                      });
                     }}
                     className="flex items-center justify-between p-2 rounded-lg hover:bg-[#2b2f3a] cursor-pointer text-xs"
                   >
@@ -740,7 +906,7 @@ export default function FileCenter() {
                       <div className="text-[10px] text-gray-500">@{u.username}</div>
                     </div>
                     <span className={`text-xs ${isSelected ? 'text-blue-400 font-bold' : 'text-gray-600'}`}>
-                      {isSelected ? '✓ 已共享' : '+ 共享'}
+                      {isSelected ? '✓ 可见' : '+ 授权'}
                     </span>
                   </div>
                 );
@@ -755,13 +921,14 @@ export default function FileCenter() {
                 取消
               </button>
               <button
-                onClick={() => {
-                  updateFileShare(shareModal.fileId, shareModal.sharedWith);
+                onClick={async () => {
+                  await updateFileShare(shareModal.targetIds, shareModal.sharedWith);
+                  setSelectedFileIds([]);
                   setShareModal(prev => ({ ...prev, isOpen: false }));
                 }}
                 className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium"
               >
-                确认权限变更
+                确认保存权限
               </button>
             </div>
           </div>

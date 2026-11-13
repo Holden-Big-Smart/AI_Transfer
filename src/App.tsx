@@ -4,6 +4,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import Sidebar from './components/layout/Sidebar';
 import FileCenter from './pages/FileCenter';
 import AICopilot from './pages/AICopilot';
+import Notes from './pages/Notes';
 import UserManagement from './pages/UserManagement';
 import Login from './pages/Login';
 import { useAuthStore } from './store/useAuthStore';
@@ -60,6 +61,7 @@ function App() {
             <Route path="/" element={<Navigate to="/file-center" replace />} />
             <Route path="/file-center/*" element={<FileCenter />} />
             <Route path="/ai-copilot/*" element={<AICopilot />} />
+            <Route path="/notes/*" element={<Notes />} />
             {currentUser.role === 'admin' && (
               <Route path="/users/*" element={<UserManagement />} />
             )}
