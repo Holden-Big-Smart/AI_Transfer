@@ -2,13 +2,54 @@
 @import "tailwindcss";
 
 @theme {
-  /* 可以在这里按需扩展品牌色，目前留空默认即可 */
+  /* 预留扩展 */
 }
 
-/* 基础重置，确保全屏占满，消除滚动条闪烁 */
+/* 声明全局深色配色方案，让浏览器原生控件（含默认滚动条、下拉框）自动切换为深色 */
+:root {
+  color-scheme: dark;
+}
+
 html, body, #root {
   height: 100%;
   margin: 0;
   padding: 0;
-  background-color: #1e2128; /* 从之前的 #f3f4f6 彻底改为深黑灰色 */
+  background-color: #1e2128;
+}
+
+/* 全局自定义极简深色滚动条 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #374151 transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 5px;   /* 纵向滚动条宽度 */
+  height: 4px;  /* 横向滚动条高度（极细） */
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent; /* 轨道完全透明，融入深色背景 */
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: rgba(75, 85, 99, 0.45); /* 半透明深灰滑块 */
+  border-radius: 9999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(156, 163, 175, 0.75); /* 鼠标悬停时微亮 */
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* 可选工具类：如需完全隐藏某处的滚动条，可在 className 中加入 no-scrollbar */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
 }

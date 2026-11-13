@@ -736,8 +736,15 @@ export default function Notes() {
 
         {/* 页面标签栏（支持拖拽排序 + 新增笔记页/新增代码页排在最前面） */}
         <div className="px-6 py-2.5 bg-[#1d2027] border-b border-gray-800 flex items-center justify-between gap-3">
-          {/* 左侧：可拖拽排序的页面 Tabs */}
-          <div className="flex items-center gap-1.5 overflow-x-auto py-0.5 flex-1">
+          {/* 左侧：可拖拽排序的页面 Tabs（支持鼠标滚轮直接左右滑动） */}
+          <div
+            onWheel={(e) => {
+              if (e.deltaY !== 0) {
+                e.currentTarget.scrollLeft += e.deltaY;
+              }
+            }}
+            className="flex items-center gap-1.5 overflow-x-auto py-1 flex-1"
+          >
             {codePages.map((page, idx) => {
               const isNotePage = page.pageType === 'note';
               const isActive = activeTabIdx === idx;
