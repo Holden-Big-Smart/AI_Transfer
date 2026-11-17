@@ -245,12 +245,34 @@ export const api = {
       title: string;
       content: string;
       code_pages: CodePage[];
+      is_public?: boolean;
     }) =>
       fetch(`${API_BASE_URL}/api/notes/save`, {
         method: 'POST',
         headers: getAuthHeaders(),
         body: JSON.stringify(data)
       }).then(handleResponse<NoteItem>),
+
+    // 切换笔记的公开/私密状态
+    togglePublic: (note_id: string, is_public: boolean) =>
+      fetch(`${API_BASE_URL}/api/notes/toggle-public`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ note_id, is_public })
+      }).then(handleResponse<{ message: string; isPublic: boolean; version?: string }>),
+
+    // 上传笔记内嵌图片（粘贴截图或本地图片）
+    uploadImage: async (file: File | Blob, filename = 'paste.png') => {
+      const token = localStorage.getItem('access_token');
+      const formData = new FormData();
+      formData.append('file', file, filename);
+      const res = await fetch(`${API_BASE_URL}/api/notes/upload-image`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: formData
+      });
+      return handleResponse<{ url: string; filename: string }>(res);
+    },
 
     deleteNote: (noteId: string) =>
       fetch(`${API_BASE_URL}/api/notes/item/${noteId}`, {

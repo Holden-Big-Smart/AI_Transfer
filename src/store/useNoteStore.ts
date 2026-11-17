@@ -11,7 +11,6 @@ export function formatDefaultNoteTitle(): string {
   return `Note_${now.getFullYear()}年${pad(now.getMonth() + 1)}月${pad(now.getDate())}日_${pad(now.getHours())}点${pad(now.getMinutes())}分${pad(now.getSeconds())}秒`;
 }
 
-// 将旧版 Markdown 文本（可能含有 ```code```）自动解析为可折叠块数组
 function parseLegacyTextToBlocks(rawText: string): NoteSubBlock[] {
   if (!rawText || !rawText.trim()) {
     return [{ id: `blk_${Date.now()}_0`, type: 'text', content: '', language: 'python', collapsed: false, title: '' }];
@@ -48,12 +47,10 @@ function parseLegacyTextToBlocks(rawText: string): NoteSubBlock[] {
     : [{ id: `blk_${Date.now()}_0`, type: 'text', content: rawText, language: 'python', collapsed: false, title: '' }];
 }
 
-// 兼容转换：确保旧版笔记与新版笔记均拥有标准的统一页面列表
 export function normalizeNoteItem(raw: any): NoteItem {
   const rawPages: any[] = Array.isArray(raw.codePages) ? raw.codePages : [];
   const normalizedPages: CodePage[] = [];
 
-  // 如果旧笔记左侧有正文 content，且页面列表里还没有生成过对应的 note 页，将其保留在第一页
   const hasNotePageAlready = rawPages.some((p) => p.pageType === 'note');
   if (raw.content && raw.content.trim() && !hasNotePageAlready) {
     normalizedPages.push({
@@ -103,7 +100,11 @@ export function normalizeNoteItem(raw: any): NoteItem {
     title: raw.title || '未命名笔记',
     content: '',
     codePages: normalizedPages,
-    updatedAt: raw.updatedAt || ''
+    isPublic: Boolean(raw.isPublic),
+    isOwner: raw.isOwner !== undefined ? Boolean(raw.isOwner) : true,
+    authorName: raw.authorName || '',
+    updatedAt: raw.updatedAt || '',
+    version: raw.version
   };
 }
 
@@ -127,7 +128,9 @@ interface NoteStore {
     title: string;
     content?: string;
     codePages: CodePage[];
+    isPublic?: boolean;
   }) => Promise<NoteItem | null>;
+  toggleNotePublic: (noteId: string, isPublic: boolean) => Promise<boolean>;
   deleteNote: (id: string) => Promise<void>;
   saveNoteFromAI: (title: string, textContent: string, codeSnippets?: string[]) => Promise<NoteItem | null>;
 }
@@ -194,7 +197,7 @@ export const useNoteStore = create<NoteStore>((set, get) => ({
     }));
   },
 
-  saveNote: async ({ id, folderId, title, codePages }) => {
+  saveNote: async ({ id, folderId, title, codePages, isPublic }) => {
     const finalTitle = title.trim() || formatDefaultNoteTitle();
     try {
       const res = await api.notes.save({
@@ -202,10 +205,10 @@ export const useNoteStore = create<NoteStore>((set, get) => ({
         folder_id: folderId,
         title: finalTitle,
         content: '',
-        code_pages: codePages
+        code_pages: codePages,
+        is_public: isPublic
       });
       const saved = normalizeNoteItem(res);
-      // 后端若在保存响应中附带最新版本号，则同步刷新本地版本标记
       const nextVersion = typeof res?.version === 'string' ? res.version : '';
 
       set((state) => {
@@ -223,6 +226,20 @@ export const useNoteStore = create<NoteStore>((set, get) => ({
     } catch (err) {
       console.error('保存笔记失败:', err);
       return null;
+    }
+  },
+
+  toggleNotePublic: async (noteId, isPublic) => {
+    try {
+      const res = await api.notes.togglePublic(noteId, isPublic);
+      set((state) => ({
+        notes: state.notes.map((n) => (n.id === noteId ? { ...n, isPublic: res.isPublic } : n)),
+        serverVersion: res.version || state.serverVersion
+      }));
+      return true;
+    } catch (err) {
+      console.error('切换笔记公开状态失败:', err);
+      return false;
     }
   },
 
