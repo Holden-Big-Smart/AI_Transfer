@@ -101,20 +101,32 @@ export const api = {
         body: JSON.stringify({ virtual_path, new_name, is_public })
       }).then(handleResponse<{ message: string }>),
 
-    // 参数结构与后端 MoveReq 保持一致（源/目标区域分离，支持跨公共与私有区移动）
-    move: (req: { source_virtual_path: string; target_virtual_path: string; source_is_public: boolean; target_is_public: boolean }) => {
-      console.log('--> [API 拦截] 准备发往后端的真实数据:', req);
-      return fetch(`${API_BASE_URL}/api/files/move`, {
+    // 支持单文件或批量跨区移动
+    move: (req: {
+      source_virtual_path?: string;
+      source_virtual_paths?: string[];
+      target_virtual_path: string;
+      source_is_public: boolean;
+      target_is_public: boolean;
+    }) =>
+      fetch(`${API_BASE_URL}/api/files/move`, {
         method: 'POST',
         headers: getAuthHeaders(),
-        body: JSON.stringify({
-          source_virtual_path: req.source_virtual_path,
-          target_virtual_path: req.target_virtual_path,
-          source_is_public: req.source_is_public,
-          target_is_public: req.target_is_public
-        })
-      }).then(handleResponse<{ message: string }>);
-    },
+        body: JSON.stringify(req)
+      }).then(handleResponse<{ message: string; moved_count?: number }>),
+
+    // 支持单文件或批量复制（同名自动追加 (1) 后缀）
+    copy: (req: {
+      source_virtual_paths: string[];
+      target_virtual_path: string;
+      source_is_public: boolean;
+      target_is_public: boolean;
+    }) =>
+      fetch(`${API_BASE_URL}/api/files/copy`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(req)
+      }).then(handleResponse<{ message: string; copied_names?: string[] }>),
 
     delete: (virtual_path: string, is_public: boolean) => {
       const params = new URLSearchParams({ virtual_path, is_public: String(is_public) });
@@ -123,6 +135,14 @@ export const api = {
         headers: getAuthHeaders()
       }).then(handleResponse<{ message: string }>);
     },
+
+    // 批量删除接口
+    batchDelete: (virtual_paths: string[], is_public: boolean) =>
+      fetch(`${API_BASE_URL}/api/files/batch-delete`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ virtual_paths, is_public })
+      }).then(handleResponse<{ message: string; deleted_count?: number }>),
 
     // 获取可共享的用户列表
     getShareableUsers: () =>

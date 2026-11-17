@@ -1,23 +1,40 @@
 // src/pages/FileCenter/index.tsx
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { api } from '../../utils/api';
 import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts';
-import { 
-  UploadCloud, FolderPlus, Download, Trash2, Home, 
+import {
+  UploadCloud, FolderPlus, Download, Trash2, Home,
   ChevronRight, X, CheckCircle2, Clock, HardDrive, FileUp, FolderUp,
-  Edit2, Scissors, ClipboardPaste, Share2, ClipboardList,
-  PieChart as PieChartIcon, Globe, Lock, CheckSquare, Square
+  Edit2, Scissors, Copy, ClipboardPaste, Share2, ClipboardList,
+  PieChart as PieChartIcon, Globe, Lock, CheckSquare, Square,
+  ArrowUp, ArrowDown, ArrowUpDown, ChevronDown, ChevronUp
 } from 'lucide-react';
 import { useFileStore } from '../../store/useFileStore';
+import type { FileNode, ClipboardItemNode } from '../../store/useFileStore';
 import { useAuthStore } from '../../store/useAuthStore';
 
-// 新增：携带相对路径的待传文件项接口（用于保持整个文件夹层级结构）
 interface StagedItem {
   file: File;
   relativePath: string;
 }
 
-// 字节单位格式化
+type SortField = 'name' | 'type' | 'size' | 'uploadTime';
+type SortOrder = 'asc' | 'desc';
+
+interface ColumnWidths {
+  name: number;
+  type: number;
+  size: number;
+  uploadTime: number;
+}
+
+const DEFAULT_COL_WIDTHS: ColumnWidths = {
+  name: 340,
+  type: 95,
+  size: 105,
+  uploadTime: 160
+};
+
 const formatBytes = (bytes: number | null) => {
   if (bytes === null) return '-';
   if (bytes === 0) return '0 B';
@@ -27,10 +44,9 @@ const formatBytes = (bytes: number | null) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 };
 
-// 预估上传耗时计算（以 5 MB/s 估算网络基准速度）
 const formatETA = (bytes: number) => {
   if (bytes === 0) return '< 1 秒';
-  const speed = 5 * 1024 * 1024; // 5 MB/s
+  const speed = 5 * 1024 * 1024;
   const seconds = Math.ceil(bytes / speed);
   if (seconds < 60) return `约 ${seconds} 秒`;
   const minutes = Math.floor(seconds / 60);
@@ -38,65 +54,175 @@ const formatETA = (bytes: number) => {
   return `约 ${minutes} 分 ${remSec} 秒`;
 };
 
-// 占总空间（50GB）的配额百分比计算
 const formatQuotaPercent = (bytes: number) => {
-  const totalQuota = 50 * 1024 * 1024 * 1024; // 50 GB 字节数
+  const totalQuota = 50 * 1024 * 1024 * 1024;
   const percent = (bytes / totalQuota) * 100;
   if (percent === 0) return '0%';
   if (percent < 0.01) return '< 0.01%';
   return `${percent.toFixed(2)}%`;
 };
 
+// 解析文件类型展示文本
+const getFileTypeLabel = (file: FileNode): string => {
+  if (file.id === 'folder_public_root') return '系统目录';
+  if (file.isFolder) return '文件夹';
+  const parts = file.name.split('.');
+  if (parts.length > 1) {
+    const ext = parts[parts.length - 1].trim().toUpperCase();
+    return ext ? `${ext}` : '文件';
+  }
+  return '文件';
+};
+
 export default function FileCenter() {
   const { currentUser } = useAuthStore();
-  const { 
-    files = [], 
-    currentPath = [], 
-    tasks = [], 
-    clipboard, setClipboard, renameNode, moveNode,
-    enterFolder, goToBreadcrumb, deleteFile, createFolder,
+  const {
+    files = [],
+    currentPath = [],
+    tasks = [],
+    clipboard, setClipboard, renameNode, moveNode, pasteClipboard,
+    enterFolder, goToBreadcrumb, deleteFile, batchDeleteFiles, createFolder,
     addTask, updateTaskProgress, removeTask,
     operationLogs = [], updateFileShare,
     loadServerFiles, loadAuditLogs
   } = useFileStore();
 
-  // 审计日志抽屉状态 (仅 Admin 可见)
   const [isLogOpen, setIsLogOpen] = useState(false);
 
-  // 新增：拖拽移动文件/文件夹的相关状态
-  const [draggedNodeId, setDraggedNodeId] = useState<string | null>(null);
+  // 移动端折叠“存储与上传面板”开关
+  const [showMobileUploadPanel, setShowMobileUploadPanel] = useState(false);
+
+  // 支持单文件及多选批量拖拽移动
+  const [draggedNodeIds, setDraggedNodeIds] = useState<string[]>([]);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
 
-  // 可共享用户列表与多选批量共享状态
+  // 全空间多选勾选状态与可共享用户列表
   const [shareableUsers, setShareableUsers] = useState<Array<{ id: string; username: string; name: string; role: string }>>([]);
   const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
 
-  // 传输队列隔离：仅筛选当前登录用户的传输任务
-  const myTasks = (tasks || []).filter(t => t.userId === currentUser?.id);
+  // 排序状态（默认按文件名升序，且文件夹始终置顶）
+  const [sortField, setSortField] = useState<SortField>('name');
+  const [sortOrder, setSortOrder] = useState<SortOrder>('asc');
 
-  // 定向共享 / 批量共享弹窗状态（targetIds 支持单选或多选）
-  const [shareModal, setShareModal] = useState<{ isOpen: boolean; targetIds: string[]; titleText: string; sharedWith: string[] }>({
+  // 列宽鼠标拖拽调整状态（持久化至 localStorage）
+  const [colWidths, setColWidths] = useState<ColumnWidths>(() => {
+    try {
+      const saved = localStorage.getItem('fc_column_widths_v1');
+      if (saved) return { ...DEFAULT_COL_WIDTHS, ...JSON.parse(saved) };
+    } catch {
+      // ignore
+    }
+    return DEFAULT_COL_WIDTHS;
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('fc_column_widths_v1', JSON.stringify(colWidths));
+    } catch {
+      // ignore
+    }
+  }, [colWidths]);
+
+  // 触发列宽鼠标拖拽
+  const startResizeColumn = (colKey: keyof ColumnWidths, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startWidth = colWidths[colKey];
+    const minW = colKey === 'name' ? 180 : 75;
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const delta = moveEvent.clientX - startX;
+      setColWidths((prev) => ({
+        ...prev,
+        [colKey]: Math.max(minW, startWidth + delta)
+      }));
+    };
+
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  };
+
+  const myTasks = (tasks || []).filter((t) => t.userId === currentUser?.id);
+
+  const [shareModal, setShareModal] = useState<{
+    isOpen: boolean;
+    targetIds: string[];
+    titleText: string;
+    sharedWith: string[];
+  }>({
     isOpen: false,
     targetIds: [],
     titleText: '',
     sharedWith: []
   });
 
-  // 获取当前所在层级
   const currentFolderId = currentPath.length > 0 ? currentPath[currentPath.length - 1].id : null;
-  const currentParentNode = files.find(f => f.id === currentFolderId);
-  const isInPublicSpace = currentFolderId === 'folder_public_root' || !!currentParentNode?.isPublicFolder;
+  const currentParentNode = files.find((f) => f.id === currentFolderId);
+  const isInPublicSpace =
+    currentFolderId === 'folder_public_root' ||
+    currentPath[0]?.id === 'folder_public_root' ||
+    !!currentParentNode?.isPublicFolder;
 
-  // 后端已完成严密的权限过滤，前端直接展示当前目录层级下的节点（访客在根目录仅展示公共空间入口）
-  const displayFiles = files.filter((file) => {
-    if (file.parentId !== currentFolderId) return false;
-    if (!isInPublicSpace && currentUser?.role === 'guest') {
-      return file.id === 'folder_public_root';
+  // 过滤并执行 Windows 资源管理器风格排序（系统目录第一 -> 文件夹始终在普通文件上方 -> 组内按选定字段排序）
+  const sortedDisplayFiles = useMemo(() => {
+    const rawList = files.filter((file) => {
+      if (file.parentId !== currentFolderId) return false;
+      if (!isInPublicSpace && currentUser?.role === 'guest') {
+        return file.id === 'folder_public_root';
+      }
+      return true;
+    });
+
+    return [...rawList].sort((a, b) => {
+      // 1. 公共共享空间入口永远固定在根目录第一行
+      if (a.id === 'folder_public_root') return -1;
+      if (b.id === 'folder_public_root') return 1;
+
+      // 2. Windows 资源管理器逻辑：文件夹始终排在普通文件上方
+      if (a.isFolder !== b.isFolder) {
+        return a.isFolder ? -1 : 1;
+      }
+
+      // 3. 组内按用户选定的列排序
+      let cmp = 0;
+      if (sortField === 'name') {
+        cmp = a.name.localeCompare(b.name, 'zh-CN', { numeric: true });
+      } else if (sortField === 'type') {
+        cmp =
+          getFileTypeLabel(a).localeCompare(getFileTypeLabel(b), 'zh-CN', { numeric: true }) ||
+          a.name.localeCompare(b.name, 'zh-CN', { numeric: true });
+      } else if (sortField === 'size') {
+        cmp = (a.size ?? 0) - (b.size ?? 0);
+      } else if (sortField === 'uploadTime') {
+        cmp = (a.uploadTime || '').localeCompare(b.uploadTime || '');
+      }
+
+      return sortOrder === 'asc' ? cmp : -cmp;
+    });
+  }, [files, currentFolderId, isInPublicSpace, currentUser, sortField, sortOrder]);
+
+  // 当前目录下所有可勾选的节点 ID（排除系统公共空间根节点）
+  const selectableIds = useMemo(
+    () => sortedDisplayFiles.filter((f) => f.id !== 'folder_public_root').map((f) => f.id),
+    [sortedDisplayFiles]
+  );
+
+  // 点击表头切换排序字段与方向
+  const handleToggleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortField(field);
+      setSortOrder('asc');
     }
-    return true;
-  });
+  };
 
-  // 切换目录时清空多选勾选并拉取服务器最新文件
   useEffect(() => {
     setSelectedFileIds([]);
     if (!currentUser) return;
@@ -105,37 +231,56 @@ export default function FileCenter() {
       api.files.getShareableUsers().then(setShareableUsers).catch(() => {});
     }
 
-    // 访客仅在进入公共空间时拉取数据
     if (currentUser.role === 'guest' && !isInPublicSpace) return;
 
-    const virtualSubPath = currentFolderId && currentFolderId !== 'folder_public_root'
-      ? currentFolderId.replace(/^(pub_|pri_)/, '')
-      : '';
+    const virtualSubPath =
+      currentFolderId && currentFolderId !== 'folder_public_root'
+        ? currentFolderId.replace(/^(pub_|pri_)/, '')
+        : '';
     loadServerFiles(isInPublicSpace, virtualSubPath);
     if (currentUser.role === 'admin') loadAuditLogs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentFolderId, isInPublicSpace, currentUser]);
 
-  // 模态弹窗与输入引用
+  // 将指定文件 ID 列表写入剪贴板（支持复制或剪切）
+  const handlePutToClipboard = (ids: string[], action: 'copy' | 'cut') => {
+    const currentPathNames = currentPath
+      .filter((p) => p.id !== 'folder_public_root')
+      .map((p) => p.name);
+    const baseVirtualPath = currentPathNames.join('/');
+
+    const targetNodes = files.filter(
+      (f) => ids.includes(f.id) && f.id !== 'folder_public_root'
+    );
+    if (targetNodes.length === 0) return;
+
+    const items: ClipboardItemNode[] = targetNodes.map((n) => ({
+      id: n.id,
+      name: n.name,
+      virtualPath: n.virtualPath || (baseVirtualPath ? `${baseVirtualPath}/${n.name}` : n.name),
+      isPublicFolder: !!n.isPublicFolder,
+      isFolder: n.isFolder
+    }));
+
+    setClipboard({ items, action });
+  };
+
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
 
-  // 控制重命名弹窗
   const [renameModal, setRenameModal] = useState<{ isOpen: boolean; id: string; oldName: string }>({
     isOpen: false,
     id: '',
     oldName: ''
   });
   const [renamedName, setRenamedName] = useState('');
-  
-  // 待上传队列（保留完整文件夹相对路径）
+
   const [stagedItems, setStagedItems] = useState<StagedItem[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
 
   const totalStagedBytes = stagedItems.reduce((acc, item) => acc + item.file.size, 0);
 
-  // 统计待上传队列中的顶层项目（将同一文件夹聚合成一项展示）
   const stagedSummaryGroups = (() => {
     const groups = new Map<string, { isFolder: boolean; count: number; size: number }>();
     for (const item of stagedItems) {
@@ -152,17 +297,18 @@ export default function FileCenter() {
     return Array.from(groups.entries());
   })();
 
-  // 递归解析拖入的文件夹并保留相对层级路径
-  const scanEntry = async (entry: any, prefix = ''): Promise<StagedItem[]> => {
+  const scanEntry = async (entry: FileSystemEntry, prefix = ''): Promise<StagedItem[]> => {
     if (!entry) return [];
     if (entry.isFile) {
       return new Promise((resolve) => {
-        entry.file((file: File) => resolve([{ file, relativePath: `${prefix}${file.name}` }]));
+        (entry as FileSystemFileEntry).file((file: File) =>
+          resolve([{ file, relativePath: `${prefix}${file.name}` }])
+        );
       });
     } else if (entry.isDirectory) {
-      const dirReader = entry.createReader();
-      const readAllEntries = async (): Promise<any[]> => {
-        const batch: any[] = await new Promise((res) => dirReader.readEntries(res));
+      const dirReader = (entry as FileSystemDirectoryEntry).createReader();
+      const readAllEntries = async (): Promise<FileSystemEntry[]> => {
+        const batch = await new Promise<FileSystemEntry[]>((res) => dirReader.readEntries(res));
         if (batch.length === 0) return [];
         const rest = await readAllEntries();
         return [...batch, ...rest];
@@ -175,17 +321,17 @@ export default function FileCenter() {
   };
 
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault(); 
+    e.preventDefault();
     e.stopPropagation();
   };
 
   const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
-    
+
     const items = e.dataTransfer.items;
     if (items) {
-      const entries: any[] = [];
+      const entries: FileSystemEntry[] = [];
       for (let i = 0; i < items.length; i++) {
         const entry = items[i].webkitGetAsEntry();
         if (entry) entries.push(entry);
@@ -195,7 +341,6 @@ export default function FileCenter() {
     }
   };
 
-  // 选择文件或选择整个文件夹监听（保留 webkitRelativePath）
   const handleNativeFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       const selected: StagedItem[] = Array.from(e.target.files).map((file) => ({
@@ -207,15 +352,14 @@ export default function FileCenter() {
     e.target.value = '';
   };
 
-  // 按顶层文件夹/单文件聚合上传（整个文件夹合并为一个任务并在后端还原完整目录树）
   const handleStartUpload = async () => {
     if (stagedItems.length === 0 || !currentUser) return;
 
-    const virtualParent = currentFolderId && currentFolderId !== 'folder_public_root'
-      ? currentFolderId.replace(/^(pub_|pri_)/, '')
-      : '';
+    const virtualParent =
+      currentFolderId && currentFolderId !== 'folder_public_root'
+        ? currentFolderId.replace(/^(pub_|pri_)/, '')
+        : '';
 
-    // 将待传列表按顶层名称分组（同一文件夹作为单个整体任务上传）
     const taskGroups = new Map<string, StagedItem[]>();
     for (const item of stagedItems) {
       const topName = item.relativePath.split('/')[0];
@@ -279,81 +423,107 @@ export default function FileCenter() {
     }
   };
 
+  // 渲染排序图标
+  const renderSortIcon = (field: SortField) => {
+    if (sortField !== field) return <ArrowUpDown size={12} className="text-gray-600" />;
+    return sortOrder === 'asc' ? (
+      <ArrowUp size={12} className="text-blue-400" />
+    ) : (
+      <ArrowDown size={12} className="text-blue-400" />
+    );
+  };
+
+  const gridTemplateStyle = {
+    gridTemplateColumns: `${colWidths.name}px ${colWidths.type}px ${colWidths.size}px ${colWidths.uploadTime}px minmax(145px, 1fr)`
+  };
+
   const storageData = [{ name: 'Used', value: 42.64 }, { name: 'Free', value: 50 * 1024 - 42.64 }];
   const COLORS = ['#3b82f6', '#374151'];
 
   return (
-    <div className="h-full w-full bg-[#1e2128] text-gray-200 p-6 flex flex-col relative select-none">
-      
-      {/* 隐藏的本地文件/文件夹读取输入控件 */}
-      <input 
-        type="file" 
-        ref={fileInputRef} 
-        multiple 
-        className="hidden" 
-        onChange={handleNativeFileSelect} 
+    <div className="h-full w-full bg-[#1e2128] text-gray-200 p-3 md:p-6 pb-16 md:pb-6 flex flex-col relative select-none overflow-hidden">
+      <input
+        type="file"
+        ref={fileInputRef}
+        multiple
+        className="hidden"
+        onChange={handleNativeFileSelect}
       />
-      <input 
-        type="file" 
-        ref={folderInputRef} 
-        multiple 
-        className="hidden" 
-        onChange={handleNativeFileSelect} 
-        {...({ webkitdirectory: '', directory: '' } as any)}
+      <input
+        type="file"
+        ref={folderInputRef}
+        multiple
+        className="hidden"
+        onChange={handleNativeFileSelect}
+        {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
       />
 
-      {/* 顶部导航（已移除右上角退出登录，统一由左下角 Sidebar 退出） */}
-      <header className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-bold text-blue-400">文件管理中心</h1>
+      {/* 顶部标题与移动端折叠面板开关 */}
+      <header className="flex justify-between items-center mb-3 md:mb-5 shrink-0">
+        <h1 className="text-lg md:text-2xl font-bold text-blue-400">文件管理中心</h1>
+        <button
+          onClick={() => setShowMobileUploadPanel(!showMobileUploadPanel)}
+          className="lg:hidden flex items-center gap-1.5 text-xs bg-[#2a2d35] border border-gray-700 px-3 py-1.5 rounded-lg text-gray-200"
+        >
+          <UploadCloud size={14} className="text-blue-400" />
+          <span>{showMobileUploadPanel ? '收起上传/配额面板' : '展开上传/配额面板'}</span>
+          {showMobileUploadPanel ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        </button>
       </header>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 flex-1 overflow-hidden">
-        
-        {/* 左侧控制区 */}
-        <div className="flex flex-col gap-5 overflow-y-auto pr-2">
-          
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-6 flex-1 overflow-hidden">
+        {/* 左侧控制区（移动端默认收起，点击可展开；桌面端常驻显示） */}
+        <div
+          className={`${
+            showMobileUploadPanel ? 'flex max-h-96 lg:max-h-none' : 'hidden lg:flex'
+          } flex-col gap-4 md:gap-5 overflow-y-auto pr-1 shrink-0`}
+        >
           {/* 存储空间仪表盘 */}
-          <div className="bg-[#2a2d35] p-5 rounded-lg shadow-lg shrink-0">
-            <h2 className="text-base font-semibold mb-3 border-b border-gray-600 pb-2">存储空间使用情况</h2>
-            <div className="h-40 relative">
+          <div className="bg-[#2a2d35] p-4 md:p-5 rounded-lg shadow-lg shrink-0">
+            <h2 className="text-sm md:text-base font-semibold mb-3 border-b border-gray-600 pb-2">
+              存储空间使用情况
+            </h2>
+            <div className="h-32 md:h-40 relative">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie data={storageData} innerRadius="70%" outerRadius="90%" dataKey="value" stroke="none">
-                    {storageData.map((_, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
+                    {storageData.map((_, index) => (
+                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                    ))}
                   </Pie>
                 </PieChart>
               </ResponsiveContainer>
               <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                <span className="text-xl font-bold">42.64 MB</span>
+                <span className="text-lg md:text-xl font-bold">42.64 MB</span>
                 <span className="text-xs text-gray-400">/ 50 GB (0.08%)</span>
               </div>
             </div>
           </div>
 
           {/* 上传面板与暂存预检区 */}
-          <div className="bg-[#2a2d35] p-5 rounded-lg shadow-lg shrink-0">
-            <h2 className="text-base font-semibold mb-3 border-b border-gray-600 pb-2">上传文件 / 文件夹</h2>
-            
-            {/* 拖拽释放区 */}
-            <div 
+          <div className="bg-[#2a2d35] p-4 md:p-5 rounded-lg shadow-lg shrink-0">
+            <h2 className="text-sm md:text-base font-semibold mb-3 border-b border-gray-600 pb-2">
+              上传文件 / 文件夹
+            </h2>
+
+            <div
               onDragOver={handleDragOver}
               onDrop={handleDrop}
-              className="border-2 border-dashed border-gray-500 rounded-lg p-5 flex flex-col items-center justify-center text-gray-400 hover:bg-[#323640] hover:border-blue-400 transition-all cursor-pointer mb-3"
+              className="border-2 border-dashed border-gray-500 rounded-lg p-4 md:p-5 flex flex-col items-center justify-center text-gray-400 hover:bg-[#323640] hover:border-blue-400 transition-all cursor-pointer mb-3"
             >
-              <UploadCloud size={28} className="mb-2 text-blue-400" />
-              <p className="text-sm font-medium text-center">将文件或整个文件夹拖拽至此</p>
-              <p className="text-xs text-gray-500 mt-1">支持多级子目录自动遍历</p>
+              <UploadCloud size={26} className="mb-2 text-blue-400" />
+              <p className="text-xs md:text-sm font-medium text-center">将文件或整个文件夹拖拽至此</p>
+              <p className="text-[11px] text-gray-500 mt-1">支持多级子目录自动遍历</p>
             </div>
 
-            {/* 文件/文件夹选择按钮组 */}
             <div className="grid grid-cols-2 gap-2 mb-3">
-              <button 
+              <button
                 onClick={() => fileInputRef.current?.click()}
                 className="flex items-center justify-center gap-1.5 bg-[#374151] hover:bg-[#4b5563] text-gray-200 text-xs py-2 px-3 rounded transition-colors"
               >
                 <FileUp size={14} /> 选择文件
               </button>
-              <button 
+              <button
                 onClick={() => folderInputRef.current?.click()}
                 className="flex items-center justify-center gap-1.5 bg-[#374151] hover:bg-[#4b5563] text-gray-200 text-xs py-2 px-3 rounded transition-colors"
               >
@@ -361,14 +531,13 @@ export default function FileCenter() {
               </button>
             </div>
 
-            {/* 待上传暂存信息看板（支持整包文件夹聚合预览） */}
             {stagedItems.length > 0 && (
-              <div className="bg-[#1e2128] border border-blue-500/30 rounded-lg p-3 mb-3">
+              <div className="bg-[#1e2128] border border-blue-500/30 rounded-lg p-3 mb-2">
                 <div className="flex justify-between items-center mb-2">
                   <span className="text-xs font-semibold text-blue-400">
                     待上传 ({stagedSummaryGroups.length} 项 / 共 {stagedItems.length} 个文件)
                   </span>
-                  <button 
+                  <button
                     onClick={() => setStagedItems([])}
                     className="text-xs text-gray-400 hover:text-red-400"
                   >
@@ -378,61 +547,80 @@ export default function FileCenter() {
 
                 <div className="max-h-24 overflow-y-auto mb-2 space-y-1 pr-1">
                   {stagedSummaryGroups.map(([name, info]) => (
-                    <div key={name} className="flex items-center justify-between text-[11px] text-gray-300 bg-[#252830] px-2 py-1 rounded">
-                      <span className="truncate">{info.isFolder ? `📁 ${name} (${info.count}个文件)` : `📄 ${name}`}</span>
+                    <div
+                      key={name}
+                      className="flex items-center justify-between text-[11px] text-gray-300 bg-[#252830] px-2 py-1 rounded"
+                    >
+                      <span className="truncate">
+                        {info.isFolder ? `📁 ${name} (${info.count}个文件)` : `📄 ${name}`}
+                      </span>
                       <span className="text-gray-500 shrink-0 ml-2">{formatBytes(info.size)}</span>
                     </div>
                   ))}
                 </div>
-                
-                {/* 传输总大小、配额占比、耗时指标 */}
+
                 <div className="grid grid-cols-3 gap-2 text-[11px] text-gray-400 border-t border-gray-700/60 pt-2 mb-3">
                   <div>
-                    <div className="flex items-center gap-1 text-gray-500 mb-0.5"><HardDrive size={11} /> 总大小</div>
+                    <div className="flex items-center gap-1 text-gray-500 mb-0.5">
+                      <HardDrive size={11} /> 总大小
+                    </div>
                     <div className="font-semibold text-gray-200">{formatBytes(totalStagedBytes)}</div>
                   </div>
                   <div>
-                    <div className="flex items-center gap-1 text-gray-500 mb-0.5"><PieChartIcon size={11} /> 占分配空间</div>
+                    <div className="flex items-center gap-1 text-gray-500 mb-0.5">
+                      <PieChartIcon size={11} /> 占分配空间
+                    </div>
                     <div className="font-semibold text-yellow-400">{formatQuotaPercent(totalStagedBytes)}</div>
                   </div>
                   <div>
-                    <div className="flex items-center gap-1 text-gray-500 mb-0.5"><Clock size={11} /> 预估耗时</div>
+                    <div className="flex items-center gap-1 text-gray-500 mb-0.5">
+                      <Clock size={11} /> 预估耗时
+                    </div>
                     <div className="font-semibold text-green-400">{formatETA(totalStagedBytes)}</div>
                   </div>
                 </div>
 
-                {/* 确认上传按钮 */}
-                <button 
+                <button
                   onClick={handleStartUpload}
                   disabled={currentUser?.role === 'guest'}
                   className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white font-medium py-2 rounded text-xs transition-colors shadow-md"
                 >
-                  {currentUser?.role !== 'guest' ? `确认开始传送 (${stagedSummaryGroups.length} 项)` : '只读访客无上传权限'}
+                  {currentUser?.role !== 'guest'
+                    ? `确认开始传送 (${stagedSummaryGroups.length} 项)`
+                    : '只读访客无上传权限'}
                 </button>
               </div>
             )}
           </div>
 
-          {/* 实时传输队列看板（仅展示当前用户的传输记录） */}
+          {/* 实时传输队列看板 */}
           {myTasks.length > 0 && (
-            <div className="bg-[#2a2d35] p-5 rounded-lg shadow-lg flex-1 overflow-y-auto">
+            <div className="bg-[#2a2d35] p-4 md:p-5 rounded-lg shadow-lg flex-1 overflow-y-auto">
               <div className="flex justify-between items-center mb-3 border-b border-gray-600 pb-2">
-                <h2 className="text-base font-semibold">传输队列</h2>
-                <span className="text-xs text-blue-400">{myTasks.filter(t => t.status === 'uploading').length} 个进行中</span>
+                <h2 className="text-sm md:text-base font-semibold">传输队列</h2>
+                <span className="text-xs text-blue-400">
+                  {myTasks.filter((t) => t.status === 'uploading').length} 个进行中
+                </span>
               </div>
               <div className="flex flex-col gap-3">
-                {myTasks.map(task => (
+                {myTasks.map((task) => (
                   <div key={task.id} className="bg-[#1e2128] p-3 rounded border border-gray-700">
                     <div className="flex justify-between items-center mb-1.5">
-                      <span className="text-xs truncate pr-3 text-gray-300" title={task.name}>{task.name}</span>
+                      <span className="text-xs truncate pr-3 text-gray-300" title={task.name}>
+                        {task.name}
+                      </span>
                       {task.status === 'uploading' && removeTask && (
-                        <button onClick={() => removeTask(task.id)} className="text-gray-500 hover:text-red-400"><X size={12}/></button>
+                        <button onClick={() => removeTask(task.id)} className="text-gray-500 hover:text-red-400">
+                          <X size={12} />
+                        </button>
                       )}
                       {task.status === 'success' && <CheckCircle2 size={14} className="text-green-500 shrink-0" />}
                     </div>
                     <div className="w-full bg-gray-700 rounded-full h-1.5 mb-1 overflow-hidden">
-                      <div 
-                        className={`h-1.5 rounded-full transition-all duration-300 ${task.status === 'success' ? 'bg-green-500' : 'bg-blue-500'}`} 
+                      <div
+                        className={`h-1.5 rounded-full transition-all duration-300 ${
+                          task.status === 'success' ? 'bg-green-500' : 'bg-blue-500'
+                        }`}
                         style={{ width: `${task.progress}%` }}
                       ></div>
                     </div>
@@ -447,59 +635,154 @@ export default function FileCenter() {
           )}
         </div>
 
-        {/* 右侧列表区 */}
-        <div className="lg:col-span-2 bg-[#2a2d35] p-5 rounded-lg shadow-lg flex flex-col overflow-hidden">
-          <div className="flex justify-between items-center mb-4 border-b border-gray-600 pb-2">
-            <div className="flex items-center text-sm font-semibold text-gray-300">
-              {/* 根目录支持作为拖拽释放目标 */}
-              <button 
-                onClick={() => goToBreadcrumb && goToBreadcrumb(-1)} 
+        {/* 右侧文件列表主区 */}
+        <div className="lg:col-span-2 bg-[#2a2d35] p-3 md:p-5 rounded-lg shadow-lg flex flex-col overflow-hidden">
+          {/* 顶部面包屑与批量操作工具栏 */}
+          <div className="flex flex-wrap justify-between items-center gap-2 mb-3 border-b border-gray-600 pb-2.5">
+            {/* 面包屑路径导航（支持将单文件或批量选中文件拖拽至任意层级或根目录） */}
+            <div className="flex items-center flex-wrap text-xs md:text-sm font-semibold text-gray-300">
+              <button
+                onClick={() => goToBreadcrumb && goToBreadcrumb(-1)}
                 onDragOver={(e) => {
-                  if (draggedNodeId && currentPath.length > 0) {
+                  if (draggedNodeIds.length > 0 && currentPath.length > 0) {
                     e.preventDefault();
                     e.dataTransfer.dropEffect = 'move';
                   }
                 }}
                 onDrop={(e) => {
-                  if (draggedNodeId && currentPath.length > 0) {
+                  if (draggedNodeIds.length > 0 && currentPath.length > 0) {
                     e.preventDefault();
-                    moveNode(draggedNodeId, null, { name: currentUser!.name, username: currentUser!.username });
-                    setDraggedNodeId(null);
+                    moveNode(draggedNodeIds, null);
+                    setDraggedNodeIds([]);
+                    setSelectedFileIds([]);
                   }
                 }}
-                className={`flex items-center gap-1 hover:text-blue-400 p-1 rounded transition-colors ${currentPath.length === 0 ? 'text-blue-400' : ''}`}
-                title="可将下方文件拖拽至此直接移到根目录"
+                className={`flex items-center gap-1 hover:text-blue-400 p-1 rounded transition-colors ${
+                  currentPath.length === 0 ? 'text-blue-400' : ''
+                }`}
+                title="可将文件（含公共文件夹内的文件）拖拽至此移回个人根目录"
               >
-                <Home size={16} /> 根目录
+                <Home size={15} /> 根目录
               </button>
 
-              {/* 各级面包屑支持作为拖拽目标 */}
               {(currentPath || []).map((node, index) => (
                 <div key={node.id} className="flex items-center">
-                  <ChevronRight size={16} className="mx-1 text-gray-500" />
-                  <button 
-                    onClick={() => goToBreadcrumb && goToBreadcrumb(index)} 
+                  <ChevronRight size={15} className="mx-0.5 text-gray-500" />
+                  <button
+                    onClick={() => goToBreadcrumb && goToBreadcrumb(index)}
                     onDragOver={(e) => {
-                      if (draggedNodeId && draggedNodeId !== node.id && index !== currentPath.length - 1) {
+                      if (
+                        draggedNodeIds.length > 0 &&
+                        !draggedNodeIds.includes(node.id) &&
+                        index !== currentPath.length - 1
+                      ) {
                         e.preventDefault();
                         e.dataTransfer.dropEffect = 'move';
                       }
                     }}
                     onDrop={(e) => {
-                      if (draggedNodeId && draggedNodeId !== node.id && index !== currentPath.length - 1) {
+                      if (
+                        draggedNodeIds.length > 0 &&
+                        !draggedNodeIds.includes(node.id) &&
+                        index !== currentPath.length - 1
+                      ) {
                         e.preventDefault();
-                        moveNode(draggedNodeId, node.id, { name: currentUser!.name, username: currentUser!.username });
-                        setDraggedNodeId(null);
+                        moveNode(draggedNodeIds, node.id);
+                        setDraggedNodeIds([]);
+                        setSelectedFileIds([]);
                       }
                     }}
-                    className={`hover:text-blue-400 p-1 rounded transition-colors ${index === currentPath.length - 1 ? 'text-blue-400 font-semibold' : ''}`}
+                    className={`hover:text-blue-400 p-1 rounded transition-colors ${
+                      index === currentPath.length - 1 ? 'text-blue-400 font-semibold' : ''
+                    }`}
                   >
                     {node.name}
                   </button>
                 </div>
               ))}
             </div>
-            <div className="flex items-center gap-2">
+
+            {/* 右侧功能与批量操作按钮组 */}
+            <div className="flex items-center flex-wrap gap-1.5">
+              {/* 批量选中操作栏（全空间支持批量复制 / 批量剪切 / 批量删除 / 公共空间批量共享） */}
+              {selectedFileIds.length > 0 && currentUser?.role !== 'guest' && (
+                <div className="flex items-center gap-1.5 bg-[#1e2128] border border-blue-500/40 px-2 py-1 rounded-lg">
+                  <span className="text-[11px] text-blue-400 font-medium px-1">
+                    已选 {selectedFileIds.length} 项
+                  </span>
+                  <button
+                    onClick={() => handlePutToClipboard(selectedFileIds, 'copy')}
+                    className="text-gray-200 hover:text-blue-400 flex items-center gap-1 text-xs bg-[#2a2d35] px-2 py-1 rounded transition-colors"
+                    title="批量复制选中项"
+                  >
+                    <Copy size={12} />
+                    <span>复制</span>
+                  </button>
+                  <button
+                    onClick={() => handlePutToClipboard(selectedFileIds, 'cut')}
+                    className="text-gray-200 hover:text-yellow-400 flex items-center gap-1 text-xs bg-[#2a2d35] px-2 py-1 rounded transition-colors"
+                    title="批量剪切选中项"
+                  >
+                    <Scissors size={12} />
+                    <span>剪切</span>
+                  </button>
+                  {isInPublicSpace && (
+                    <button
+                      onClick={() =>
+                        setShareModal({
+                          isOpen: true,
+                          targetIds: selectedFileIds,
+                          titleText: `已选中的 ${selectedFileIds.length} 个项目`,
+                          sharedWith: []
+                        })
+                      }
+                      className="text-blue-300 hover:text-white flex items-center gap-1 text-xs bg-blue-600/30 border border-blue-500/40 px-2 py-1 rounded transition-colors"
+                    >
+                      <Share2 size={12} />
+                      <span>共享</span>
+                    </button>
+                  )}
+                  <button
+                    onClick={async () => {
+                      if (confirm(`确认将选中的 ${selectedFileIds.length} 个项目移入回收站吗？`)) {
+                        await batchDeleteFiles(selectedFileIds);
+                        setSelectedFileIds([]);
+                      }
+                    }}
+                    className="text-red-400 hover:text-red-300 flex items-center gap-1 text-xs bg-red-950/30 border border-red-800/40 px-2 py-1 rounded transition-colors"
+                  >
+                    <Trash2 size={12} />
+                    <span>删除</span>
+                  </button>
+                </div>
+              )}
+
+              {/* 剪贴板粘贴状态栏（支持复制粘贴与剪切粘贴，同目录复制自动追加 (1)） */}
+              {clipboard && clipboard.items.length > 0 && currentUser?.role !== 'guest' && (
+                <div className="flex items-center gap-1 bg-yellow-950/40 border border-yellow-600/50 px-2.5 py-1 rounded-lg">
+                  <button
+                    onClick={async () => {
+                      await pasteClipboard(currentFolderId);
+                      setSelectedFileIds([]);
+                    }}
+                    className="text-yellow-300 hover:text-yellow-200 flex items-center gap-1 text-xs font-medium"
+                    title="将剪贴板中的项目粘贴到当前目录（若同名自动添加 (1) 后缀）"
+                  >
+                    <ClipboardPaste size={13} />
+                    <span>
+                      粘贴到此处 ({clipboard.action === 'copy' ? '复制' : '剪切'} {clipboard.items.length} 项)
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => setClipboard(null)}
+                    className="text-gray-400 hover:text-white ml-1"
+                    title="清空剪贴板"
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+              )}
+
               {currentUser?.role === 'admin' && (
                 <button
                   onClick={() => setIsLogOpen(true)}
@@ -511,269 +794,386 @@ export default function FileCenter() {
                 </button>
               )}
 
-              {/* 公共空间下勾选了文件时，显示批量共享按钮 */}
-              {isInPublicSpace && selectedFileIds.length > 0 && currentUser?.role !== 'guest' && (
+              {currentUser?.role !== 'guest' && (
                 <button
-                  onClick={() =>
-                    setShareModal({
-                      isOpen: true,
-                      targetIds: selectedFileIds,
-                      titleText: `已选中的 ${selectedFileIds.length} 个项目`,
-                      sharedWith: []
-                    })
-                  }
-                  className="text-blue-300 hover:text-white flex items-center gap-1 text-xs bg-blue-600/30 border border-blue-500/50 px-2.5 py-1.5 rounded transition-colors"
+                  onClick={() => setIsModalOpen(true)}
+                  className="text-blue-400 hover:text-blue-300 flex items-center gap-1 text-xs bg-[#323640] px-3 py-1.5 rounded transition-colors"
                 >
-                  <Share2 size={14} />
-                  <span>批量共享 ({selectedFileIds.length})</span>
+                  <FolderPlus size={14} /> 新建文件夹
                 </button>
               )}
+            </div>
+          </div>
 
-              {clipboard && (
-                <button
-                  onClick={() => moveNode(clipboard.id, currentFolderId, { name: currentUser!.name, username: currentUser!.username })}
-                  className="text-yellow-400 hover:text-yellow-300 flex items-center gap-1 text-xs bg-yellow-950/40 border border-yellow-700/50 px-2.5 py-1.5 rounded transition-colors"
-                  title="将已剪切的项移动到当前打开的目录"
-                >
-                  <ClipboardPaste size={14} /> 粘贴到此处
-                </button>
-              )}
-
-              <button 
-                onClick={() => setIsModalOpen(true)} 
-                className="text-blue-400 hover:text-blue-300 flex items-center gap-1 text-xs bg-[#323640] px-3 py-1.5 rounded transition-colors"
+          {/* 表格横向滚动与可拖拽列宽容器 */}
+          <div className="flex-1 overflow-auto">
+            <div className="min-w-max">
+              {/* 表头（支持点击排序 + 右侧边缘鼠标拖拽调整列宽） */}
+              <div
+                style={gridTemplateStyle}
+                className="grid items-center text-xs text-gray-400 font-semibold border-b border-gray-700 pb-2 mb-1 sticky top-0 bg-[#2a2d35] z-10"
               >
-                <FolderPlus size={14} /> 新建文件夹
-              </button>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-12 gap-4 text-xs text-gray-400 font-semibold border-b border-gray-700 pb-2 mb-2 items-center">
-            <div className="col-span-6 flex items-center gap-2">
-              {isInPublicSpace && currentUser?.role !== 'guest' && displayFiles.length > 0 && (
-                <button
-                  onClick={() => {
-                    const selectableIds = displayFiles
-                      .filter(f => f.id !== 'folder_public_root' && (f.ownerId === currentUser?.id || currentUser?.role === 'admin'))
-                      .map(f => f.id);
-                    setSelectedFileIds(selectedFileIds.length === selectableIds.length ? [] : selectableIds);
-                  }}
-                  className="text-gray-400 hover:text-white"
-                  title="全选/取消全选可管理的公共文件"
-                >
-                  {selectedFileIds.length > 0 && selectedFileIds.length === displayFiles.filter(f => f.id !== 'folder_public_root' && (f.ownerId === currentUser?.id || currentUser?.role === 'admin')).length
-                    ? <CheckSquare size={14} className="text-blue-400" />
-                    : <Square size={14} />}
-                </button>
-              )}
-              <span>文件名</span>
-            </div>
-            <div className="col-span-2">大小</div>
-            <div className="col-span-2">上传时间</div>
-            <div className="col-span-2 text-right">操作</div>
-          </div>
-
-          <div className="flex-1 overflow-y-auto">
-            {displayFiles.length === 0 ? (
-              <div className="text-center text-gray-500 py-12 text-sm">当前文件夹为空</div>
-            ) : (
-              displayFiles.map((file) => {
-                const isItemDraggable = currentUser?.role !== 'guest' && file.id !== 'folder_public_root';
-                const isDropTarget = file.isFolder && dropTargetId === file.id;
-                const isBeingDragged = draggedNodeId === file.id;
-
-                return (
-                <div 
-                  key={file.id} 
-                  draggable={isItemDraggable}
-                  onDragStart={(e) => {
-                    e.stopPropagation();
-                    e.dataTransfer.setData('text/plain', file.id);
-                    e.dataTransfer.effectAllowed = 'move';
-                    setDraggedNodeId(file.id);
-                  }}
-                  onDragEnd={() => {
-                    setDraggedNodeId(null);
-                    setDropTargetId(null);
-                  }}
-                  onDragOver={(e) => {
-                    // 仅文件夹允许作为释放目标，且不能拖入自身
-                    if (file.isFolder && draggedNodeId && draggedNodeId !== file.id) {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      e.dataTransfer.dropEffect = 'move';
-                      // 【关键修复1】：通过条件判断阻断无限 Re-render，解决卡顿
-                      if (dropTargetId !== file.id) {
-                        setDropTargetId(file.id);
+                {/* 列 1：全选框 + 文件名 */}
+                <div className="relative flex items-center gap-2 pr-3 overflow-hidden">
+                  {currentUser?.role !== 'guest' && selectableIds.length > 0 && (
+                    <button
+                      onClick={() =>
+                        setSelectedFileIds(
+                          selectedFileIds.length === selectableIds.length ? [] : selectableIds
+                        )
                       }
-                    }
-                  }}
-                  onDragEnter={(e) => {
-                    // 【关键修复2】：废弃此处的 setDropTargetId 状态更新，交由 onDragOver 节流处理
-                    if (file.isFolder && draggedNodeId && draggedNodeId !== file.id) {
-                      e.preventDefault();
-                    }
-                  }}
-                  onDragLeave={(e) => {
-                    if (file.isFolder && dropTargetId === file.id) {
-                      // 【关键修复3】：校验鼠标是否真正离开了当前行，排除经过子元素时的误触发
-                      if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-                        setDropTargetId(null);
-                      }
-                    }
-                  }}
-                  onDrop={(e) => {
-                    if (file.isFolder && draggedNodeId && draggedNodeId !== file.id) {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      moveNode(draggedNodeId, file.id, { name: currentUser!.name, username: currentUser!.username });
-                      setDraggedNodeId(null);
-                      setDropTargetId(null);
-                    }
-                  }}
-                  className={`grid grid-cols-12 gap-4 items-center text-xs py-3 border-b transition-all group select-none ${
-                    isDropTarget 
-                      ? 'bg-blue-900/40 border-blue-400 shadow-md scale-[1.008] pl-2' 
-                      : 'border-gray-700/60 hover:bg-[#323640]'
-                  } ${isBeingDragged ? 'opacity-35 border-dashed border-gray-500' : ''} ${
-                    isItemDraggable ? 'cursor-grab active:cursor-grabbing' : 'cursor-default'
-                  }`}
-                >
-                  <div className="col-span-6 flex items-center gap-2 text-gray-300 truncate pr-2">
-                    {/* 公共空间下支持勾选文件进行批量共享 */}
-                    {isInPublicSpace && file.id !== 'folder_public_root' && (file.ownerId === currentUser?.id || currentUser?.role === 'admin') && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setSelectedFileIds((prev) =>
-                            prev.includes(file.id) ? prev.filter((id) => id !== file.id) : [...prev, file.id]
-                          );
-                        }}
-                        className="text-gray-400 hover:text-blue-400 shrink-0"
-                      >
-                        {selectedFileIds.includes(file.id) ? (
-                          <CheckSquare size={14} className="text-blue-400" />
-                        ) : (
-                          <Square size={14} />
-                        )}
-                      </button>
-                    )}
-
-                    {file.isFolder ? <span className="text-yellow-500 text-sm">📁</span> : <span className="text-blue-400 text-sm">📄</span>}
-                    <span 
-                      className={`truncate ${file.isFolder ? 'cursor-pointer hover:text-blue-400 hover:underline font-medium' : ''}`} 
-                      onClick={() => file.isFolder && enterFolder && enterFolder(file.id, file.name)}
+                      className="text-gray-400 hover:text-white shrink-0"
+                      title="全选 / 取消全选"
                     >
-                      {file.name}
-                    </span>
-
-                    {/* 公共空间内显示当前文件的可见性权限角标 */}
-                    {isInPublicSpace && file.id !== 'folder_public_root' && (
-                      file.sharedWith?.includes('ALL') ? (
-                        <span className="text-[10px] bg-green-950/60 text-green-400 border border-green-700/50 px-1.5 py-0.5 rounded shrink-0 flex items-center gap-0.5">
-                          <Globe size={10} /> 所有人可见
-                        </span>
-                      ) : file.sharedWith && file.sharedWith.length > 0 ? (
-                        <span className="text-[10px] bg-blue-950/60 text-blue-400 border border-blue-700/50 px-1.5 py-0.5 rounded shrink-0">
-                          指定 {file.sharedWith.length} 人
-                        </span>
+                      {selectedFileIds.length > 0 && selectedFileIds.length === selectableIds.length ? (
+                        <CheckSquare size={14} className="text-blue-400" />
                       ) : (
-                        <span className="text-[10px] bg-gray-800 text-gray-400 border border-gray-700 px-1.5 py-0.5 rounded shrink-0 flex items-center gap-0.5">
-                          <Lock size={10} /> 仅自己可见
-                        </span>
-                      )
-                    )}
-                  </div>
-                  <div className="col-span-2 text-gray-400">{formatBytes(file.size)}</div>
-                  <div className="col-span-2 text-gray-500">{file.uploadTime}</div>
-                  <div className="col-span-2 text-right opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-end gap-2">
-                    <button 
-                      onClick={() => {
-                        const virtualPath = file.virtualPath || file.name;
-                        window.open(api.files.getDownloadUrl(virtualPath, isInPublicSpace), '_blank');
-                      }} 
-                      className="text-blue-400 hover:text-blue-300" 
-                      title="下载文件"
-                    >
-                      <Download size={14} />
+                        <Square size={14} />
+                      )}
                     </button>
-
-                    {/* 在公共空间下，允许作者或管理员配置共享权限 */}
-                    {isInPublicSpace && file.id !== 'folder_public_root' && (file.ownerId === currentUser?.id || currentUser?.role === 'admin') && (
-                      <button
-                        onClick={() => setShareModal({
-                          isOpen: true,
-                          targetIds: [file.id],
-                          titleText: file.name,
-                          sharedWith: file.sharedWith || []
-                        })}
-                        className={`hover:text-blue-400 ${file.sharedWith && file.sharedWith.length > 0 ? 'text-blue-400' : 'text-gray-400'}`}
-                        title="设置共享权限（仅自己 / 指定用户 / 所有人及访客可见）"
-                      >
-                        <Share2 size={13} />
-                      </button>
-                    )}
-
-                    {/* 非系统根目录允许重命名与剪切 */}
-                    {currentUser?.role !== 'guest' && file.id !== 'folder_public_root' && (
-                      <>
-                        <button
-                          onClick={() => {
-                            setRenamedName(file.name);
-                            setRenameModal({ isOpen: true, id: file.id, oldName: file.name });
-                          }}
-                          className="text-gray-400 hover:text-yellow-400"
-                          title="重命名"
-                        >
-                          <Edit2 size={13} />
-                        </button>
-                        <button
-                          onClick={() => setClipboard({ id: file.id, action: 'cut' })}
-                          className={`hover:text-blue-400 ${clipboard?.id === file.id ? 'text-blue-400 animate-pulse' : 'text-gray-400'}`}
-                          title="剪切"
-                        >
-                          <Scissors size={13} />
-                        </button>
-                      </>
-                    )}
-
-                    {/* 删除按钮：管理员与普通用户均开放（系统根目录禁止删除） */}
-                    {currentUser?.role !== 'guest' && file.id !== 'folder_public_root' && (
-                      <button
-                        onClick={() => deleteFile && deleteFile(file.id, { name: currentUser!.name, username: currentUser!.username })}
-                        className="text-red-400 hover:text-red-300"
-                        title="删除"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    )}
-                  </div>
+                  )}
+                  <button
+                    onClick={() => handleToggleSort('name')}
+                    className="flex items-center gap-1 hover:text-gray-200 truncate"
+                  >
+                    <span>文件名</span>
+                    {renderSortIcon('name')}
+                  </button>
+                  <div
+                    onMouseDown={(e) => startResizeColumn('name', e)}
+                    className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-blue-500/60 transition-colors"
+                    title="按住左右拖动调整【文件名】列宽"
+                  />
                 </div>
-                );
-              })
-            )}
+
+                {/* 列 2：类型 */}
+                <div className="relative flex items-center px-2 overflow-hidden">
+                  <button
+                    onClick={() => handleToggleSort('type')}
+                    className="flex items-center gap-1 hover:text-gray-200 truncate"
+                  >
+                    <span>类型</span>
+                    {renderSortIcon('type')}
+                  </button>
+                  <div
+                    onMouseDown={(e) => startResizeColumn('type', e)}
+                    className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-blue-500/60 transition-colors"
+                    title="按住左右拖动调整【类型】列宽"
+                  />
+                </div>
+
+                {/* 列 3：大小 */}
+                <div className="relative flex items-center px-2 overflow-hidden">
+                  <button
+                    onClick={() => handleToggleSort('size')}
+                    className="flex items-center gap-1 hover:text-gray-200 truncate"
+                  >
+                    <span>大小</span>
+                    {renderSortIcon('size')}
+                  </button>
+                  <div
+                    onMouseDown={(e) => startResizeColumn('size', e)}
+                    className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-blue-500/60 transition-colors"
+                    title="按住左右拖动调整【大小】列宽"
+                  />
+                </div>
+
+                {/* 列 4：上传时间 */}
+                <div className="relative flex items-center px-2 overflow-hidden">
+                  <button
+                    onClick={() => handleToggleSort('uploadTime')}
+                    className="flex items-center gap-1 hover:text-gray-200 truncate"
+                  >
+                    <span>上传时间</span>
+                    {renderSortIcon('uploadTime')}
+                  </button>
+                  <div
+                    onMouseDown={(e) => startResizeColumn('uploadTime', e)}
+                    className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-blue-500/60 transition-colors"
+                    title="按住左右拖动调整【上传时间】列宽"
+                  />
+                </div>
+
+                {/* 列 5：操作 */}
+                <div className="text-right pr-2">操作</div>
+              </div>
+
+              {/* 文件行列表 */}
+              {sortedDisplayFiles.length === 0 ? (
+                <div className="text-center text-gray-500 py-12 text-sm">当前文件夹为空</div>
+              ) : (
+                sortedDisplayFiles.map((file) => {
+                  const isItemDraggable =
+                    currentUser?.role !== 'guest' && file.id !== 'folder_public_root';
+                  const isDropTarget =
+                    file.isFolder && dropTargetId === file.id && !draggedNodeIds.includes(file.id);
+                  const isBeingDragged = draggedNodeIds.includes(file.id);
+                  const isSelected = selectedFileIds.includes(file.id);
+                  const isInClipboard = clipboard?.items.some((i) => i.id === file.id);
+
+                  return (
+                    <div
+                      key={file.id}
+                      style={gridTemplateStyle}
+                      draggable={isItemDraggable}
+                      onDragStart={(e) => {
+                        e.stopPropagation();
+                        // 如果拖动的是已勾选的项目之一，则自动触发批量拖动全部已勾选项
+                        const batchIds = isSelected ? selectedFileIds : [file.id];
+                        e.dataTransfer.setData('text/plain', JSON.stringify(batchIds));
+                        e.dataTransfer.effectAllowed = 'move';
+                        setDraggedNodeIds(batchIds);
+                      }}
+                      onDragEnd={() => {
+                        setDraggedNodeIds([]);
+                        setDropTargetId(null);
+                      }}
+                      onDragOver={(e) => {
+                        if (
+                          file.isFolder &&
+                          draggedNodeIds.length > 0 &&
+                          !draggedNodeIds.includes(file.id)
+                        ) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          e.dataTransfer.dropEffect = 'move';
+                          if (dropTargetId !== file.id) {
+                            setDropTargetId(file.id);
+                          }
+                        }
+                      }}
+                      onDragLeave={(e) => {
+                        if (file.isFolder && dropTargetId === file.id) {
+                          if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                            setDropTargetId(null);
+                          }
+                        }
+                      }}
+                      onDrop={(e) => {
+                        if (
+                          file.isFolder &&
+                          draggedNodeIds.length > 0 &&
+                          !draggedNodeIds.includes(file.id)
+                        ) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          moveNode(draggedNodeIds, file.id);
+                          setDraggedNodeIds([]);
+                          setDropTargetId(null);
+                          setSelectedFileIds([]);
+                        }
+                      }}
+                      className={`grid items-center text-xs py-2.5 border-b transition-all group select-none ${
+                        isDropTarget
+                          ? 'bg-blue-900/40 border-blue-400 shadow-md pl-2'
+                          : isSelected
+                          ? 'bg-blue-950/30 border-gray-700/60 hover:bg-[#323640]'
+                          : 'border-gray-700/60 hover:bg-[#323640]'
+                      } ${isBeingDragged ? 'opacity-35 border-dashed border-gray-500' : ''} ${
+                        isItemDraggable ? 'cursor-grab active:cursor-grabbing' : 'cursor-default'
+                      }`}
+                    >
+                      {/* 列 1：复选框 + 图标 + 文件名 + 权限角标 */}
+                      <div className="flex items-center gap-2 text-gray-300 truncate pr-3">
+                        {currentUser?.role !== 'guest' && file.id !== 'folder_public_root' && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedFileIds((prev) =>
+                                prev.includes(file.id)
+                                  ? prev.filter((id) => id !== file.id)
+                                  : [...prev, file.id]
+                              );
+                            }}
+                            className="text-gray-400 hover:text-blue-400 shrink-0"
+                          >
+                            {isSelected ? (
+                              <CheckSquare size={14} className="text-blue-400" />
+                            ) : (
+                              <Square size={14} />
+                            )}
+                          </button>
+                        )}
+
+                        {file.isFolder ? (
+                          <span className="text-yellow-500 text-sm shrink-0">📁</span>
+                        ) : (
+                          <span className="text-blue-400 text-sm shrink-0">📄</span>
+                        )}
+                        <span
+                          className={`truncate ${
+                            file.isFolder
+                              ? 'cursor-pointer hover:text-blue-400 hover:underline font-medium'
+                              : ''
+                          }`}
+                          onClick={() =>
+                            file.isFolder && enterFolder && enterFolder(file.id, file.name)
+                          }
+                          title={file.name}
+                        >
+                          {file.name}
+                        </span>
+
+                        {isInPublicSpace && file.id !== 'folder_public_root' && (
+                          file.sharedWith?.includes('ALL') ? (
+                            <span className="text-[10px] bg-green-950/60 text-green-400 border border-green-700/50 px-1.5 py-0.5 rounded shrink-0 flex items-center gap-0.5">
+                              <Globe size={10} /> 所有人可见
+                            </span>
+                          ) : file.sharedWith && file.sharedWith.length > 0 ? (
+                            <span className="text-[10px] bg-blue-950/60 text-blue-400 border border-blue-700/50 px-1.5 py-0.5 rounded shrink-0">
+                              指定 {file.sharedWith.length} 人
+                            </span>
+                          ) : (
+                            <span className="text-[10px] bg-gray-800 text-gray-400 border border-gray-700 px-1.5 py-0.5 rounded shrink-0 flex items-center gap-0.5">
+                              <Lock size={10} /> 仅自己可见
+                            </span>
+                          )
+                        )}
+                      </div>
+
+                      {/* 列 2：类型 */}
+                      <div className="px-2 text-gray-400 truncate">{getFileTypeLabel(file)}</div>
+
+                      {/* 列 3：大小 */}
+                      <div className="px-2 text-gray-400 truncate">{formatBytes(file.size)}</div>
+
+                      {/* 列 4：上传时间 */}
+                      <div className="px-2 text-gray-500 truncate">{file.uploadTime}</div>
+
+                      {/* 列 5：操作按钮（移动端常驻可见，桌面端悬停可见） */}
+                      <div className="pr-2 text-right opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity flex items-center justify-end gap-2">
+                        {!file.isFolder && (
+                          <button
+                            onClick={() => {
+                              const virtualPath = file.virtualPath || file.name;
+                              window.open(
+                                api.files.getDownloadUrl(virtualPath, isInPublicSpace),
+                                '_blank'
+                              );
+                            }}
+                            className="text-blue-400 hover:text-blue-300"
+                            title="下载文件"
+                          >
+                            <Download size={14} />
+                          </button>
+                        )}
+
+                        {isInPublicSpace &&
+                          file.id !== 'folder_public_root' &&
+                          (file.ownerId === currentUser?.id || currentUser?.role === 'admin') && (
+                            <button
+                              onClick={() =>
+                                setShareModal({
+                                  isOpen: true,
+                                  targetIds: [file.id],
+                                  titleText: file.name,
+                                  sharedWith: file.sharedWith || []
+                                })
+                              }
+                              className={`hover:text-blue-400 ${
+                                file.sharedWith && file.sharedWith.length > 0
+                                  ? 'text-blue-400'
+                                  : 'text-gray-400'
+                              }`}
+                              title="设置共享权限"
+                            >
+                              <Share2 size={13} />
+                            </button>
+                          )}
+
+                        {currentUser?.role !== 'guest' && file.id !== 'folder_public_root' && (
+                          <>
+                            <button
+                              onClick={() => {
+                                setRenamedName(file.name);
+                                setRenameModal({ isOpen: true, id: file.id, oldName: file.name });
+                              }}
+                              className="text-gray-400 hover:text-yellow-400"
+                              title="重命名"
+                            >
+                              <Edit2 size={13} />
+                            </button>
+
+                            <button
+                              onClick={() => handlePutToClipboard([file.id], 'copy')}
+                              className={`hover:text-blue-400 ${
+                                isInClipboard && clipboard?.action === 'copy'
+                                  ? 'text-blue-400 animate-pulse'
+                                  : 'text-gray-400'
+                              }`}
+                              title="复制"
+                            >
+                              <Copy size={13} />
+                            </button>
+
+                            <button
+                              onClick={() => handlePutToClipboard([file.id], 'cut')}
+                              className={`hover:text-yellow-400 ${
+                                isInClipboard && clipboard?.action === 'cut'
+                                  ? 'text-yellow-400 animate-pulse'
+                                  : 'text-gray-400'
+                              }`}
+                              title="剪切"
+                            >
+                              <Scissors size={13} />
+                            </button>
+
+                            <button
+                              onClick={() =>
+                                deleteFile &&
+                                deleteFile(file.id, {
+                                  name: currentUser!.name,
+                                  username: currentUser!.username
+                                })
+                              }
+                              className="text-red-400 hover:text-red-300"
+                              title="删除"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
           </div>
         </div>
       </div>
 
       {/* 新建文件夹模态弹窗 */}
       {isModalOpen && (
-        <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-50">
+        <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
           <div className="bg-[#2a2d35] rounded-lg p-5 w-88 shadow-2xl border border-gray-700">
             <div className="flex justify-between items-center mb-3">
               <h3 className="text-base font-bold text-gray-200">新建文件夹</h3>
-              <button onClick={() => setIsModalOpen(false)} className="text-gray-400 hover:text-white"><X size={18} /></button>
+              <button onClick={() => setIsModalOpen(false)} className="text-gray-400 hover:text-white">
+                <X size={18} />
+              </button>
             </div>
-            <input 
-              type="text" autoFocus value={newFolderName}
+            <input
+              type="text"
+              autoFocus
+              value={newFolderName}
               onChange={(e) => setNewFolderName(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleCreateFolder()}
               placeholder="请输入文件夹名称"
               className="w-full bg-[#1e2128] border border-gray-600 rounded px-3 py-2 mb-4 text-xs text-gray-200 focus:outline-none focus:border-blue-400"
             />
             <div className="flex justify-end gap-2">
-              <button onClick={() => setIsModalOpen(false)} className="px-3 py-1.5 rounded text-xs text-gray-400 hover:bg-[#323640] transition-colors">取消</button>
-              <button onClick={handleCreateFolder} disabled={!newFolderName.trim()} className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white rounded text-xs transition-colors">
+              <button
+                onClick={() => setIsModalOpen(false)}
+                className="px-3 py-1.5 rounded text-xs text-gray-400 hover:bg-[#323640] transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleCreateFolder}
+                disabled={!newFolderName.trim()}
+                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white rounded text-xs transition-colors"
+              >
                 确认创建
               </button>
             </div>
@@ -783,40 +1183,51 @@ export default function FileCenter() {
 
       {/* 重命名弹窗 */}
       {renameModal.isOpen && (
-        <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-50">
+        <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
           <div className="bg-[#2a2d35] rounded-lg p-5 w-88 shadow-2xl border border-gray-700">
             <div className="flex justify-between items-center mb-3">
               <h3 className="text-base font-bold text-gray-200">重命名项目</h3>
-              <button onClick={() => setRenameModal({ isOpen: false, id: '', oldName: '' })} className="text-gray-400 hover:text-white">
+              <button
+                onClick={() => setRenameModal({ isOpen: false, id: '', oldName: '' })}
+                className="text-gray-400 hover:text-white"
+              >
                 <X size={18} />
               </button>
             </div>
-            <input 
-              type="text" autoFocus value={renamedName}
+            <input
+              type="text"
+              autoFocus
+              value={renamedName}
               onChange={(e) => setRenamedName(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && renamedName.trim()) {
-                  renameNode(renameModal.id, renamedName.trim(), { name: currentUser!.name, username: currentUser!.username });
+                  renameNode(renameModal.id, renamedName.trim(), {
+                    name: currentUser!.name,
+                    username: currentUser!.username
+                  });
                   setRenameModal({ isOpen: false, id: '', oldName: '' });
                 }
               }}
               className="w-full bg-[#1e2128] border border-gray-600 rounded px-3 py-2 mb-4 text-xs text-gray-200 focus:outline-none focus:border-blue-400"
             />
             <div className="flex justify-end gap-2">
-              <button 
-                onClick={() => setRenameModal({ isOpen: false, id: '', oldName: '' })} 
+              <button
+                onClick={() => setRenameModal({ isOpen: false, id: '', oldName: '' })}
                 className="px-3 py-1.5 rounded text-xs text-gray-400 hover:bg-[#323640] transition-colors"
               >
                 取消
               </button>
-              <button 
+              <button
                 onClick={() => {
                   if (renamedName.trim()) {
-                    renameNode(renameModal.id, renamedName.trim(), { name: currentUser!.name, username: currentUser!.username });
+                    renameNode(renameModal.id, renamedName.trim(), {
+                      name: currentUser!.name,
+                      username: currentUser!.username
+                    });
                     setRenameModal({ isOpen: false, id: '', oldName: '' });
                   }
-                }} 
-                disabled={!renamedName.trim()} 
+                }}
+                disabled={!renamedName.trim()}
                 className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white rounded text-xs transition-colors"
               >
                 确认修改
@@ -835,7 +1246,10 @@ export default function FileCenter() {
                 <Share2 size={16} className="text-blue-400" />
                 设置公共空间访问权限
               </h3>
-              <button onClick={() => setShareModal(prev => ({ ...prev, isOpen: false }))} className="text-gray-400 hover:text-white">
+              <button
+                onClick={() => setShareModal((prev) => ({ ...prev, isOpen: false }))}
+                className="text-gray-400 hover:text-white"
+              >
                 <X size={16} />
               </button>
             </div>
@@ -843,7 +1257,6 @@ export default function FileCenter() {
               目标: <span className="text-gray-200 font-medium">{shareModal.titleText}</span>
             </p>
 
-            {/* 开关 1：所有人可见（开启后公共访客与所有用户均可见） */}
             <div
               onClick={() => {
                 const isAll = shareModal.sharedWith.includes('ALL');
@@ -859,7 +1272,10 @@ export default function FileCenter() {
               }`}
             >
               <div className="flex items-center gap-2.5">
-                <Globe size={16} className={shareModal.sharedWith.includes('ALL') ? 'text-green-400' : 'text-gray-500'} />
+                <Globe
+                  size={16}
+                  className={shareModal.sharedWith.includes('ALL') ? 'text-green-400' : 'text-gray-500'}
+                />
                 <div>
                   <div className="text-xs font-semibold">所有人可见 (含公共访客)</div>
                   <div className="text-[10px] text-gray-400">开启后访客及全体成员均可查看与下载</div>
@@ -870,12 +1286,11 @@ export default function FileCenter() {
               </span>
             </div>
 
-            {/* 列表 2：指定内部用户可见 */}
             <div className="flex items-center justify-between text-[11px] text-gray-400 mb-1.5">
               <span>或指定特定成员可见 (全不选则仅自己可见):</span>
               {shareModal.sharedWith.length > 0 && (
                 <button
-                  onClick={() => setShareModal(prev => ({ ...prev, sharedWith: [] }))}
+                  onClick={() => setShareModal((prev) => ({ ...prev, sharedWith: [] }))}
                   className="text-red-400 hover:underline"
                 >
                   设为仅自己可见
@@ -884,38 +1299,40 @@ export default function FileCenter() {
             </div>
 
             <div className="space-y-2 max-h-44 overflow-y-auto mb-4 p-2 bg-[#1e2128] rounded-xl border border-gray-700/80">
-              {shareableUsers.filter(u => u.id !== currentUser?.id).map((u) => {
-                const isAll = shareModal.sharedWith.includes('ALL');
-                const isSelected = isAll || shareModal.sharedWith.includes(u.id);
-                return (
-                  <div
-                    key={u.id}
-                    onClick={() => {
-                      setShareModal(prev => {
-                        const withoutAll = prev.sharedWith.filter(id => id !== 'ALL');
-                        const next = withoutAll.includes(u.id)
-                          ? withoutAll.filter(id => id !== u.id)
-                          : [...withoutAll, u.id];
-                        return { ...prev, sharedWith: next };
-                      });
-                    }}
-                    className="flex items-center justify-between p-2 rounded-lg hover:bg-[#2b2f3a] cursor-pointer text-xs"
-                  >
-                    <div>
-                      <div className="font-medium text-gray-200">{u.name}</div>
-                      <div className="text-[10px] text-gray-500">@{u.username}</div>
+              {shareableUsers
+                .filter((u) => u.id !== currentUser?.id)
+                .map((u) => {
+                  const isAll = shareModal.sharedWith.includes('ALL');
+                  const isSelected = isAll || shareModal.sharedWith.includes(u.id);
+                  return (
+                    <div
+                      key={u.id}
+                      onClick={() => {
+                        setShareModal((prev) => {
+                          const withoutAll = prev.sharedWith.filter((id) => id !== 'ALL');
+                          const next = withoutAll.includes(u.id)
+                            ? withoutAll.filter((id) => id !== u.id)
+                            : [...withoutAll, u.id];
+                          return { ...prev, sharedWith: next };
+                        });
+                      }}
+                      className="flex items-center justify-between p-2 rounded-lg hover:bg-[#2b2f3a] cursor-pointer text-xs"
+                    >
+                      <div>
+                        <div className="font-medium text-gray-200">{u.name}</div>
+                        <div className="text-[10px] text-gray-500">@{u.username}</div>
+                      </div>
+                      <span className={`text-xs ${isSelected ? 'text-blue-400 font-bold' : 'text-gray-600'}`}>
+                        {isSelected ? '✓ 可见' : '+ 授权'}
+                      </span>
                     </div>
-                    <span className={`text-xs ${isSelected ? 'text-blue-400 font-bold' : 'text-gray-600'}`}>
-                      {isSelected ? '✓ 可见' : '+ 授权'}
-                    </span>
-                  </div>
-                );
-              })}
+                  );
+                })}
             </div>
 
             <div className="flex justify-end gap-2">
               <button
-                onClick={() => setShareModal(prev => ({ ...prev, isOpen: false }))}
+                onClick={() => setShareModal((prev) => ({ ...prev, isOpen: false }))}
                 className="px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:bg-[#1e2128]"
               >
                 取消
@@ -924,7 +1341,7 @@ export default function FileCenter() {
                 onClick={async () => {
                   await updateFileShare(shareModal.targetIds, shareModal.sharedWith);
                   setSelectedFileIds([]);
-                  setShareModal(prev => ({ ...prev, isOpen: false }));
+                  setShareModal((prev) => ({ ...prev, isOpen: false }));
                 }}
                 className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium"
               >
@@ -937,7 +1354,7 @@ export default function FileCenter() {
 
       {/* 管理员操作审计日志抽屉 */}
       {isLogOpen && (
-        <div className="absolute inset-y-0 right-0 w-96 bg-[#1a1c23] border-l border-gray-800 shadow-2xl z-50 flex flex-col animate-in slide-in-from-right duration-200">
+        <div className="absolute inset-y-0 right-0 w-full max-w-sm bg-[#1a1c23] border-l border-gray-800 shadow-2xl z-50 flex flex-col">
           <div className="p-4 border-b border-gray-800 flex items-center justify-between">
             <h3 className="text-sm font-bold text-gray-100 flex items-center gap-2">
               <ClipboardList size={16} className="text-blue-400" />
@@ -955,16 +1372,16 @@ export default function FileCenter() {
               operationLogs.map((log) => (
                 <div key={log.id} className="p-3 bg-[#21242c] border border-gray-800 rounded-xl text-xs space-y-1">
                   <div className="flex items-center justify-between">
-                    <span className="font-semibold text-gray-200">{log.operatorName} (@{log.operatorUsername})</span>
+                    <span className="font-semibold text-gray-200">
+                      {log.operatorName} (@{log.operatorUsername})
+                    </span>
                     <span className="text-[10px] text-gray-500">{log.time}</span>
                   </div>
                   <div className="text-gray-300 flex items-center gap-1.5">
                     <span className="text-blue-400 font-medium">[{log.action}]</span>
                     <span className="truncate">{log.targetName}</span>
                   </div>
-                  {log.details && (
-                    <div className="text-[11px] text-gray-500">{log.details}</div>
-                  )}
+                  {log.details && <div className="text-[11px] text-gray-500">{log.details}</div>}
                 </div>
               ))
             )}

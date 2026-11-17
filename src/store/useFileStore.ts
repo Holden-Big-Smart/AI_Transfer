@@ -5,23 +5,22 @@ import { api, ApiError } from '../utils/api';
 export interface FileNode {
   id: string;
   name: string;
-  size: number | null; 
+  size: number | null;
   isFolder: boolean;
   uploadTime: string;
-  parentId: string | null; 
-  ownerId: string;            // 归属者用户ID（'system' 为系统内置）
-  isPublicFolder?: boolean;   // 是否属于公共空间分支
-  sharedWith?: string[];      // 定向共享列表（用户ID数组，为空则公共内全员可见）
-  virtualPath?: string;       // 服务端真实虚拟路径
+  parentId: string | null;
+  ownerId: string;
+  isPublicFolder?: boolean;
+  sharedWith?: string[];
+  virtualPath?: string;
 }
 
-// 新增：操作审计日志接口
 export interface OperationLog {
   id: string;
   time: string;
   operatorName: string;
   operatorUsername: string;
-  action: '上传' | '删除' | '重命名' | '移动' | '创建文件夹';
+  action: '上传' | '删除' | '重命名' | '移动' | '创建文件夹' | '权限变更';
   targetName: string;
   details?: string;
 }
@@ -37,30 +36,117 @@ export interface UploadTask {
   size: number;
   progress: number;
   status: 'uploading' | 'success' | 'error';
-  userId?: string; // 新增：标记任务的发起用户 ID
+  userId?: string;
+}
+
+// 剪贴板快照节点（避免跨目录切换后原节点在当前视图被卸载导致无法粘贴）
+export interface ClipboardItemNode {
+  id: string;
+  name: string;
+  virtualPath: string;
+  isPublicFolder: boolean;
+  isFolder: boolean;
+}
+
+export interface ClipboardState {
+  items: ClipboardItemNode[];
+  action: 'cut' | 'copy';
 }
 
 export interface FileStore {
   files: FileNode[];
   currentPath: PathNode[];
   tasks: UploadTask[];
-  clipboard: { id: string; action: 'cut' | 'copy' } | null;
-  operationLogs: OperationLog[]; // 新增：日志队列
+  clipboard: ClipboardState | null;
+  operationLogs: OperationLog[];
 
   enterFolder: (id: string, name: string) => void;
   goToBreadcrumb: (index: number) => void;
   deleteFile: (id: string, operator?: { name: string; username: string }) => void;
-  createFolder: (name: string, parentId: string | null, ownerId: string, isPublic?: boolean, operator?: { name: string; username: string }) => void;
+  batchDeleteFiles: (ids: string[]) => Promise<void>;
+  createFolder: (
+    name: string,
+    parentId: string | null,
+    ownerId: string,
+    isPublic?: boolean,
+    operator?: { name: string; username: string }
+  ) => void;
   addFile: (file: FileNode, operator?: { name: string; username: string }) => void;
   renameNode: (id: string, newName: string, operator?: { name: string; username: string }) => void;
-  moveNode: (id: string, targetParentId: string | null, operator?: { name: string; username: string }) => Promise<void>;
-  updateFileShare: (ids: string | string[], sharedWithUserIds: string[]) => Promise<void>; // 新增：更新指定共享（支持批量）
+  moveNode: (
+    ids: string | string[],
+    targetParentId: string | null,
+    operator?: { name: string; username: string }
+  ) => Promise<void>;
+  pasteClipboard: (targetParentId: string | null) => Promise<void>;
+  updateFileShare: (ids: string | string[], sharedWithUserIds: string[]) => Promise<void>;
   loadServerFiles: (isPublic: boolean, subPath?: string) => Promise<void>;
   loadAuditLogs: () => Promise<void>;
-  setClipboard: (item: { id: string; action: 'cut' | 'copy' } | null) => void;
+  setClipboard: (item: ClipboardState | null) => void;
   addTask: (task: UploadTask) => void;
   updateTaskProgress: (id: string, progress: number, status?: UploadTask['status']) => void;
   removeTask: (id: string) => void;
+}
+
+// 辅助函数：根据目标父节点 ID 解析出后端所需的 target_virtual_path 与 target_is_public
+function resolveTargetDestination(
+  state: { files: FileNode[]; currentPath: PathNode[] },
+  targetParentId: string | null
+): { targetVirtualPath: string; isTargetPublic: boolean } {
+  const currentPathNames = state.currentPath
+    .filter((p) => p.id !== 'folder_public_root')
+    .map((p) => p.name);
+  const baseVirtualPath = currentPathNames.join('/');
+
+  if (targetParentId === 'folder_public_root') {
+    return { targetVirtualPath: '', isTargetPublic: true };
+  }
+  if (targetParentId === null) {
+    // 关键修复：targetParentId 为 null 代表个人空间根目录，强制重置 isTargetPublic 为 false
+    return { targetVirtualPath: '', isTargetPublic: false };
+  }
+
+  const breadcrumbIndex = state.currentPath.findIndex((p) => p.id === targetParentId);
+  if (breadcrumbIndex !== -1) {
+    const targetPathNames = state.currentPath
+      .slice(0, breadcrumbIndex + 1)
+      .filter((p) => p.id !== 'folder_public_root')
+      .map((p) => p.name);
+    return {
+      targetVirtualPath: targetPathNames.join('/'),
+      isTargetPublic: state.currentPath[0]?.id === 'folder_public_root'
+    };
+  }
+
+  const targetNode = state.files.find((f) => f.id === targetParentId);
+  if (targetNode) {
+    const targetVirtualPath =
+      targetNode.virtualPath ||
+      (baseVirtualPath ? `${baseVirtualPath}/${targetNode.name}` : targetNode.name);
+    return {
+      targetVirtualPath,
+      isTargetPublic: !!targetNode.isPublicFolder
+    };
+  }
+
+  return {
+    targetVirtualPath: baseVirtualPath,
+    isTargetPublic: state.currentPath[0]?.id === 'folder_public_root'
+  };
+}
+
+function getCurrentFolderContext(state: { files: FileNode[]; currentPath: PathNode[] }) {
+  const currentFolderId =
+    state.currentPath.length > 0 ? state.currentPath[state.currentPath.length - 1].id : null;
+  const isInPublicSpace =
+    currentFolderId === 'folder_public_root' ||
+    state.currentPath[0]?.id === 'folder_public_root' ||
+    !!state.files.find((f) => f.id === currentFolderId)?.isPublicFolder;
+  const virtualSubPath =
+    currentFolderId && currentFolderId !== 'folder_public_root'
+      ? currentFolderId.replace(/^(pub_|pri_)/, '')
+      : '';
+  return { currentFolderId, isInPublicSpace, virtualSubPath };
 }
 
 export const useFileStore = create<FileStore>((set, get) => ({
@@ -81,18 +167,28 @@ export const useFileStore = create<FileStore>((set, get) => ({
   clipboard: null,
   operationLogs: [],
 
-  enterFolder: (id, name) => 
+  enterFolder: (id, name) =>
     set((state) => ({ currentPath: [...state.currentPath, { id, name }] })),
 
   goToBreadcrumb: (index) =>
-    set((state) => ({ currentPath: index === -1 ? [] : state.currentPath.slice(0, index + 1) })),
+    set((state) => ({
+      currentPath: index === -1 ? [] : state.currentPath.slice(0, index + 1)
+    })),
 
   loadServerFiles: async (isPublic, subPath = '') => {
     try {
       const serverNodes = await api.files.list(isPublic, subPath);
       set((state) => {
-        // 保留公共根节点，把服务端获取的真实节点并入
-        const filtered = state.files.filter(f => f.id === 'folder_public_root' || f.parentId !== (subPath ? (isPublic ? `pub_${subPath}` : `pri_${subPath}`) : (isPublic ? 'folder_public_root' : null)));
+        const targetParentId = subPath
+          ? isPublic
+            ? `pub_${subPath}`
+            : `pri_${subPath}`
+          : isPublic
+          ? 'folder_public_root'
+          : null;
+        const filtered = state.files.filter(
+          (f) => f.id === 'folder_public_root' || f.parentId !== targetParentId
+        );
         return { files: [...filtered, ...serverNodes] };
       });
     } catch (err) {
@@ -123,8 +219,10 @@ export const useFileStore = create<FileStore>((set, get) => ({
   },
 
   createFolder: (name, parentId, _ownerId, isPublic) => {
-    // 乐观更新并在后台请求服务器
-    const virtualParent = parentId && parentId !== 'folder_public_root' ? parentId.replace(/^(pub_|pri_)/, '') : '';
+    const virtualParent =
+      parentId && parentId !== 'folder_public_root'
+        ? parentId.replace(/^(pub_|pri_)/, '')
+        : '';
     api.files.createFolder(name, virtualParent, !!isPublic).then(() => {
       get().loadServerFiles(!!isPublic, virtualParent);
     });
@@ -135,7 +233,7 @@ export const useFileStore = create<FileStore>((set, get) => ({
   },
 
   deleteFile: (id) => {
-    const target = get().files.find(f => f.id === id);
+    const target = get().files.find((f) => f.id === id);
     if (!target || target.id === 'folder_public_root') return;
 
     const virtualPath = target.virtualPath || target.name;
@@ -146,130 +244,143 @@ export const useFileStore = create<FileStore>((set, get) => ({
     });
   },
 
+  batchDeleteFiles: async (ids) => {
+    const state = get();
+    const targets = state.files.filter(
+      (f) => ids.includes(f.id) && f.id !== 'folder_public_root'
+    );
+    if (targets.length === 0) return;
+
+    const isPublic = !!targets[0].isPublicFolder;
+    const virtualPaths = targets.map((f) => f.virtualPath || f.name);
+
+    try {
+      await api.files.batchDelete(virtualPaths, isPublic);
+      const idSet = new Set(ids);
+      set((s) => ({
+        files: s.files.filter((f) => !idSet.has(f.id))
+      }));
+      if (isPublic) state.loadAuditLogs();
+    } catch (err) {
+      alert(`批量删除失败: ${err instanceof Error ? err.message : '未知错误'}`);
+    }
+  },
+
   renameNode: (id, newName) => {
-    const target = get().files.find(f => f.id === id);
+    const target = get().files.find((f) => f.id === id);
     if (!target) return;
 
     const virtualPath = target.virtualPath || target.name;
     const isPublic = !!target.isPublicFolder;
 
-    api.files.rename(virtualPath, newName, isPublic).then(() => {
-      set((state) => ({
-        files: state.files.map((f) => (f.id === id ? { ...f, name: newName } : f))
-      }));
-    });
+    api.files
+      .rename(virtualPath, newName, isPublic)
+      .then(() => {
+        const { isInPublicSpace, virtualSubPath } = getCurrentFolderContext(get());
+        get().loadServerFiles(isInPublicSpace, virtualSubPath);
+      })
+      .catch((err) => {
+        alert(`重命名失败: ${err instanceof Error ? err.message : '未知错误'}`);
+      });
   },
 
-  moveNode: async (id, targetParentId) => {
-    console.log('\n========== [DEBUG: 前端移动逻辑开始] ==========');
-    console.log('1. 传入参数:', { id, targetParentId });
-
+  // 支持单个或批量拖拽移动（含从公共空间拖回根目录）
+  moveNode: async (ids, targetParentId) => {
     const state = get();
-    const sourceNode = state.files.find(f => f.id === id);
-    if (!sourceNode) {
-      console.error('-> 错误: 找不到源节点数据');
-      return;
-    }
+    const idList = Array.isArray(ids) ? ids : [ids];
+    const sourceNodes = state.files.filter(
+      (f) => idList.includes(f.id) && f.id !== 'folder_public_root' && f.id !== targetParentId
+    );
+    if (sourceNodes.length === 0) return;
 
-    // 1. 防呆检测：禁止将文件夹移入其自身层级
-    if (targetParentId) {
-      let currentAncestor: FileNode | undefined = state.files.find(f => f.id === targetParentId);
-      while (currentAncestor) {
-        if (currentAncestor.id === id) {
-          alert('操作无效：不能将文件夹移动到其自身的子文件夹中！');
-          return;
-        }
-        currentAncestor = state.files.find(f => f.id === currentAncestor?.parentId);
-      }
-    }
-
-    // 2. 利用面包屑动态计算当前所处目录的基础路径 (Base Path)
     const currentPathNames = state.currentPath
-      .filter(p => p.id !== 'folder_public_root')
-      .map(p => p.name);
+      .filter((p) => p.id !== 'folder_public_root')
+      .map((p) => p.name);
     const baseVirtualPath = currentPathNames.join('/');
 
-    // 准确的源文件虚拟路径
-    const sourceVirtualPath = baseVirtualPath
-      ? `${baseVirtualPath}/${sourceNode.name}`
-      : sourceNode.name;
+    const sourceVirtualPaths = sourceNodes.map(
+      (n) => n.virtualPath || (baseVirtualPath ? `${baseVirtualPath}/${n.name}` : n.name)
+    );
+    const sourceIsPublic = !!sourceNodes[0].isPublicFolder;
 
-    // 3. 计算目标虚拟路径
-    let targetVirtualPath = '';
-    let isTargetPublic = sourceNode.isPublicFolder || false;
+    const { targetVirtualPath, isTargetPublic } = resolveTargetDestination(
+      state,
+      targetParentId
+    );
 
-    if (targetParentId === 'folder_public_root') {
-      targetVirtualPath = '';
-      isTargetPublic = true;
-    } else if (targetParentId === null) {
-      // 拖到了面包屑的“根目录”
-      targetVirtualPath = '';
-    } else {
-      // 目标可能是：A) 面包屑上的祖先目录，B) 当前列表里的子目录
-      const breadcrumbIndex = state.currentPath.findIndex(p => p.id === targetParentId);
-      if (breadcrumbIndex !== -1) {
-        // 拖拽到了面包屑的某一层
-        const targetPathNames = state.currentPath
-          .slice(0, breadcrumbIndex + 1)
-          .filter(p => p.id !== 'folder_public_root')
-          .map(p => p.name);
-        targetVirtualPath = targetPathNames.join('/');
-        isTargetPublic = state.currentPath[0]?.id === 'folder_public_root';
-      } else {
-        // 拖拽到了当前列表里的某个文件夹
-        const targetNode = state.files.find(f => f.id === targetParentId);
-        if (targetNode) {
-          targetVirtualPath = baseVirtualPath
-            ? `${baseVirtualPath}/${targetNode.name}`
-            : targetNode.name;
-          isTargetPublic = !!targetNode.isPublicFolder;
-        }
-      }
-    }
-
-    const requestPayload = {
-      source_virtual_path: sourceVirtualPath,
-      target_virtual_path: targetVirtualPath,
-      source_is_public: !!sourceNode.isPublicFolder,
-      target_is_public: isTargetPublic
-    };
-
-    console.log('2. 组装好的 Frontend Payload:', requestPayload);
-
-    // ==== 核心修复：【乐观更新】瞬间修改前端画面，彻底消灭视觉延迟 ====
-    set(state => ({
-      files: state.files.map(f => f.id === id ? { ...f, parentId: targetParentId, isPublicFolder: isTargetPublic } : f),
-      clipboard: null
+    const movedIdSet = new Set(sourceNodes.map((n) => n.id));
+    set((s) => ({
+      files: s.files.map((f) =>
+        movedIdSet.has(f.id)
+          ? { ...f, parentId: targetParentId, isPublicFolder: isTargetPublic }
+          : f
+      )
     }));
 
-    const currentFolderId = state.currentPath.length > 0
-      ? state.currentPath[state.currentPath.length - 1].id
-      : null;
-    const isInPublicSpace = currentFolderId === 'folder_public_root' || !!state.files.find(f => f.id === currentFolderId)?.isPublicFolder;
-    const virtualSubPath = currentFolderId && currentFolderId !== 'folder_public_root'
-      ? currentFolderId.replace(/^(pub_|pri_)/, '')
-      : '';
+    const { isInPublicSpace, virtualSubPath } = getCurrentFolderContext(state);
 
     try {
-      console.log('3. 正在调用 API...');
-      await api.files.move(requestPayload);
-      console.log('4. API 调用成功！');
-
-      // 移动成功后，后端已落盘，前端静默拉取对齐数据
-      await state.loadServerFiles(isInPublicSpace, virtualSubPath);
-      console.log('========== [DEBUG: 前端逻辑结束] ==========\n');
+      await api.files.move({
+        source_virtual_paths: sourceVirtualPaths,
+        target_virtual_path: targetVirtualPath,
+        source_is_public: sourceIsPublic,
+        target_is_public: isTargetPublic
+      });
+      await get().loadServerFiles(isInPublicSpace, virtualSubPath);
+      if (sourceIsPublic || isTargetPublic) get().loadAuditLogs();
     } catch (err) {
-      console.error('========== [DEBUG: 捕获到后端报错] ==========');
+      await get().loadServerFiles(isInPublicSpace, virtualSubPath);
+      const detail =
+        err instanceof ApiError
+          ? err.detail || err.message
+          : err instanceof Error
+          ? err.message
+          : String(err);
+      alert(`移动失败: ${detail}`);
+    }
+  },
 
-      // 悲观回滚画面
-      await state.loadServerFiles(isInPublicSpace, virtualSubPath);
+  // 粘贴剪贴板中的项目（自动识别剪切或复制，复制支持同目录自动生成 (1) 副本）
+  pasteClipboard: async (targetParentId) => {
+    const state = get();
+    const clip = state.clipboard;
+    if (!clip || clip.items.length === 0) return;
 
-      // 提取核心数据用于暴力弹窗
-      const backendError = err instanceof ApiError ? (err.detail || err.message) : (err instanceof Error ? err.message : String(err));
-      const payloadStr = JSON.stringify(requestPayload, null, 2);
+    const { targetVirtualPath, isTargetPublic } = resolveTargetDestination(
+      state,
+      targetParentId
+    );
+    const sourceIsPublic = clip.items[0].isPublicFolder;
+    const sourceVirtualPaths = clip.items.map((item) => item.virtualPath);
+    const { isInPublicSpace, virtualSubPath } = getCurrentFolderContext(state);
 
-      // 直接用系统原生 alert 把数据贴在屏幕正中间
-      alert(`🚨 【移动失败拦截】\n\n【后端物理路径返回】:\n${backendError}\n\n====================\n\n【前端实际发送的参数】:\n${payloadStr}`);
+    try {
+      if (clip.action === 'cut') {
+        await api.files.move({
+          source_virtual_paths: sourceVirtualPaths,
+          target_virtual_path: targetVirtualPath,
+          source_is_public: sourceIsPublic,
+          target_is_public: isTargetPublic
+        });
+      } else {
+        await api.files.copy({
+          source_virtual_paths: sourceVirtualPaths,
+          target_virtual_path: targetVirtualPath,
+          source_is_public: sourceIsPublic,
+          target_is_public: isTargetPublic
+        });
+      }
+      set({ clipboard: null });
+      await get().loadServerFiles(isInPublicSpace, virtualSubPath);
+      if (sourceIsPublic || isTargetPublic) get().loadAuditLogs();
+    } catch (err) {
+      const detail =
+        err instanceof ApiError
+          ? err.detail || err.message
+          : err instanceof Error
+          ? err.message
+          : String(err);
+      alert(`${clip.action === 'cut' ? '剪切移动' : '复制'}失败: ${detail}`);
     }
   },
 
@@ -289,12 +400,13 @@ export const useFileStore = create<FileStore>((set, get) => ({
 
       const idSet = new Set(targetIds);
       set((s) => ({
-        files: s.files.map((f) => (idSet.has(f.id) ? { ...f, sharedWith: sharedWithUserIds } : f))
+        files: s.files.map((f) =>
+          idSet.has(f.id) ? { ...f, sharedWith: sharedWithUserIds } : f
+        )
       }));
 
-      if (state.loadAuditLogs) state.loadAuditLogs();
+      state.loadAuditLogs();
     } catch (err) {
-      console.error('更新共享失败:', err);
       const detail = err instanceof ApiError ? err.detail : undefined;
       alert(`更新共享权限失败: ${detail || (err instanceof Error ? err.message : '未知错误')}`);
     }
@@ -308,5 +420,6 @@ export const useFileStore = create<FileStore>((set, get) => ({
         t.id === id ? { ...t, progress, status: status || t.status } : t
       )
     })),
-  removeTask: (id) => set((state) => ({ tasks: state.tasks.filter(t => t.id !== id) }))
+  removeTask: (id) =>
+    set((state) => ({ tasks: state.tasks.filter((t) => t.id !== id) }))
 }));
