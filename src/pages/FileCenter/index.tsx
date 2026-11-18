@@ -7,7 +7,7 @@ import {
   ChevronRight, X, CheckCircle2, Clock, HardDrive, FileUp, FolderUp,
   Edit2, Scissors, Copy, ClipboardPaste, Share2, ClipboardList,
   PieChart as PieChartIcon, Globe, Lock, CheckSquare, Square,
-  ArrowUp, ArrowDown, ArrowUpDown, ChevronDown, ChevronUp
+  ArrowUp, ArrowDown, ArrowUpDown, ChevronDown, ChevronUp, RefreshCw
 } from 'lucide-react';
 import { useFileStore } from '../../store/useFileStore';
 import type { FileNode, ClipboardItemNode } from '../../store/useFileStore';
@@ -88,6 +88,7 @@ export default function FileCenter() {
   } = useFileStore();
 
   const [isLogOpen, setIsLogOpen] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   // 移动端折叠“存储与上传面板”开关
   const [showMobileUploadPanel, setShowMobileUploadPanel] = useState(false);
@@ -231,7 +232,11 @@ export default function FileCenter() {
       api.files.getShareableUsers().then(setShareableUsers).catch(() => {});
     }
 
-    if (currentUser.role === 'guest' && !isInPublicSpace) return;
+    // 访客若因会话路径被持久化而停留在私有子目录，自动切回根目录
+    if (currentUser.role === 'guest' && !isInPublicSpace) {
+      if (currentPath.length > 0 && goToBreadcrumb) goToBreadcrumb(-1);
+      return;
+    }
 
     const virtualSubPath =
       currentFolderId && currentFolderId !== 'folder_public_root'
@@ -241,6 +246,25 @@ export default function FileCenter() {
     if (currentUser.role === 'admin') loadAuditLogs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentFolderId, isInPublicSpace, currentUser]);
+
+  // 页内手动刷新当前所在目录（不重置目录位置）
+  const handleManualRefresh = async () => {
+    if (!currentUser) return;
+    if (currentUser.role === 'guest' && !isInPublicSpace) return;
+    setIsRefreshing(true);
+    const virtualSubPath =
+      currentFolderId && currentFolderId !== 'folder_public_root'
+        ? currentFolderId.replace(/^(pub_|pri_)/, '')
+        : '';
+    try {
+      await loadServerFiles(isInPublicSpace, virtualSubPath);
+      if (currentUser.role === 'admin') {
+        await loadAuditLogs();
+      }
+    } finally {
+      setTimeout(() => setIsRefreshing(false), 500);
+    }
+  };
 
   // 将指定文件 ID 列表写入剪贴板（支持复制或剪切）
   const handlePutToClipboard = (ids: string[], action: 'copy' | 'cut') => {
@@ -781,6 +805,18 @@ export default function FileCenter() {
                     <X size={13} />
                   </button>
                 </div>
+              )}
+
+              {/* 页内刷新按钮：重新拉取当前目录文件，不重置当前所在层级 */}
+              {!(currentUser?.role === 'guest' && !isInPublicSpace) && (
+                <button
+                  onClick={handleManualRefresh}
+                  className="text-gray-300 hover:text-white flex items-center gap-1 text-xs bg-[#323640] hover:bg-[#3d424e] px-2.5 py-1.5 rounded transition-colors"
+                  title="刷新当前文件夹内容"
+                >
+                  <RefreshCw size={13} className={isRefreshing ? 'animate-spin text-blue-400' : 'text-blue-400'} />
+                  <span>刷新</span>
+                </button>
               )}
 
               {currentUser?.role === 'admin' && (

@@ -149,6 +149,30 @@ function getCurrentFolderContext(state: { files: FileNode[]; currentPath: PathNo
   return { currentFolderId, isInPublicSpace, virtualSubPath };
 }
 
+// 当前所在目录路径的会话级持久化（刷新页面后仍停留在原文件夹）
+const PATH_STORAGE_KEY = 'fc_current_path_v1';
+
+function loadPersistedPath(): PathNode[] {
+  try {
+    const raw = sessionStorage.getItem(PATH_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {
+    // ignore
+  }
+  return [];
+}
+
+function savePersistedPath(path: PathNode[]) {
+  try {
+    sessionStorage.setItem(PATH_STORAGE_KEY, JSON.stringify(path));
+  } catch {
+    // ignore
+  }
+}
+
 export const useFileStore = create<FileStore>((set, get) => ({
   files: [
     {
@@ -162,18 +186,24 @@ export const useFileStore = create<FileStore>((set, get) => ({
       isPublicFolder: true
     }
   ],
-  currentPath: [],
+  currentPath: loadPersistedPath(),
   tasks: [],
   clipboard: null,
   operationLogs: [],
 
   enterFolder: (id, name) =>
-    set((state) => ({ currentPath: [...state.currentPath, { id, name }] })),
+    set((state) => {
+      const nextPath = [...state.currentPath, { id, name }];
+      savePersistedPath(nextPath);
+      return { currentPath: nextPath };
+    }),
 
   goToBreadcrumb: (index) =>
-    set((state) => ({
-      currentPath: index === -1 ? [] : state.currentPath.slice(0, index + 1)
-    })),
+    set((state) => {
+      const nextPath = index === -1 ? [] : state.currentPath.slice(0, index + 1);
+      savePersistedPath(nextPath);
+      return { currentPath: nextPath };
+    }),
 
   loadServerFiles: async (isPublic, subPath = '') => {
     try {
