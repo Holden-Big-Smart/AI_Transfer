@@ -132,6 +132,7 @@ interface NoteStore {
   }) => Promise<NoteItem | null>;
   toggleNotePublic: (noteId: string, isPublic: boolean) => Promise<boolean>;
   deleteNote: (id: string) => Promise<void>;
+  importNotesBackup: (backupData: { folders?: Array<{ name: string }>; notes?: any[] }) => Promise<number>;
   saveNoteFromAI: (title: string, textContent: string, codeSnippets?: string[]) => Promise<NoteItem | null>;
 }
 
@@ -281,5 +282,43 @@ export const useNoteStore = create<NoteStore>((set, get) => ({
       title: title || formatDefaultNoteTitle(),
       codePages: pages
     });
+  },
+
+  // 批量导入还原 .note.json 备份数据
+  importNotesBackup: async (backupData) => {
+    const state = get();
+    const folderNameMap = new Map<string, string>();
+    state.folders.forEach((f) => folderNameMap.set(f.name, f.id));
+
+    if (Array.isArray(backupData.folders)) {
+      for (const f of backupData.folders) {
+        if (f.name && !folderNameMap.has(f.name)) {
+          const created = await api.notes.createFolder(f.name);
+          folderNameMap.set(created.name, created.id);
+        }
+      }
+    }
+
+    let importedCount = 0;
+    if (Array.isArray(backupData.notes)) {
+      for (const rawNote of backupData.notes) {
+        const normalized = normalizeNoteItem(rawNote);
+        let targetFolderId = state.selectedFolderId;
+        if (rawNote.folderName && folderNameMap.has(rawNote.folderName)) {
+          targetFolderId = folderNameMap.get(rawNote.folderName) || null;
+        }
+        await api.notes.save({
+          folder_id: targetFolderId,
+          title: normalized.title || formatDefaultNoteTitle(),
+          content: '',
+          code_pages: normalized.codePages,
+          is_public: Boolean(normalized.isPublic)
+        });
+        importedCount++;
+      }
+    }
+
+    await get().loadNotesData();
+    return importedCount;
   }
 }));
