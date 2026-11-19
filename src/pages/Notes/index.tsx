@@ -39,19 +39,19 @@ function highlightCodeToHtml(code: string): string {
     const safe = escapeHtml(full);
 
     if (strTok) {
-      result += `<span class="text-amber-300">${safe}</span>`;
+      result += `<span class="code-tok-str">${safe}</span>`;
     } else if (commentTok) {
-      result += `<span class="text-emerald-500/80 italic">${safe}</span>`;
+      result += `<span class="code-tok-comment">${safe}</span>`;
     } else if (decoratorTok) {
-      result += `<span class="text-yellow-400">${safe}</span>`;
+      result += `<span class="code-tok-decorator">${safe}</span>`;
     } else if (kwTok) {
-      result += `<span class="text-purple-400 font-semibold">${safe}</span>`;
+      result += `<span class="code-tok-kw">${safe}</span>`;
     } else if (builtinTok) {
-      result += `<span class="text-cyan-400">${safe}</span>`;
+      result += `<span class="code-tok-builtin">${safe}</span>`;
     } else if (funcTok) {
-      result += `<span class="text-blue-400">${safe}</span>`;
+      result += `<span class="code-tok-func">${safe}</span>`;
     } else if (numTok) {
-      result += `<span class="text-orange-400">${safe}</span>`;
+      result += `<span class="code-tok-num">${safe}</span>`;
     } else {
       result += safe;
     }
@@ -148,13 +148,13 @@ function SyntaxHighlightEditor({
         <pre
           ref={preRef}
           aria-hidden="true"
-          className={`absolute inset-0 m-0 p-4 font-mono text-xs leading-6 text-gray-200 overflow-hidden pointer-events-none select-none ${
+          className={`code-editor-pre absolute inset-0 m-0 p-4 font-mono text-xs leading-6 overflow-hidden pointer-events-none select-none ${
             wordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'
           }`}
           dangerouslySetInnerHTML={{
             __html: value
               ? highlightCodeToHtml(value)
-              : `<span class="text-gray-600">${escapeHtml(placeholder)}</span>`
+              : `<span class="code-editor-placeholder">${escapeHtml(placeholder)}</span>`
           }}
         />
         <textarea
@@ -167,7 +167,7 @@ function SyntaxHighlightEditor({
           spellCheck={false}
           autoCapitalize="off"
           autoComplete="off"
-          className={`absolute inset-0 w-full h-full m-0 p-4 font-mono text-xs leading-6 bg-transparent text-transparent caret-white resize-none focus:outline-none select-text ${
+          className={`code-editor-textarea absolute inset-0 w-full h-full m-0 p-4 font-mono text-xs leading-6 bg-transparent text-transparent resize-none focus:outline-none select-text ${
             wordWrap ? 'whitespace-pre-wrap break-all overflow-y-auto overflow-x-hidden' : 'whitespace-pre overflow-auto'
           }`}
         />

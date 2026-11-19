@@ -1,7 +1,7 @@
 // src/pages/FileCenter/index.tsx
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { api } from '../../utils/api';
-import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts';
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 import {
   UploadCloud, FolderPlus, Download, Trash2, Home,
   ChevronRight, X, CheckCircle2, Clock, HardDrive, FileUp, FolderUp,
@@ -54,8 +54,8 @@ const formatETA = (bytes: number) => {
   return `约 ${minutes} 分 ${remSec} 秒`;
 };
 
-const formatQuotaPercent = (bytes: number) => {
-  const totalQuota = 50 * 1024 * 1024 * 1024;
+const formatQuotaPercent = (bytes: number, totalQuota = 50 * 1024 * 1024 * 1024) => {
+  if (!totalQuota) return '0%';
   const percent = (bytes / totalQuota) * 100;
   if (percent === 0) return '0%';
   if (percent < 0.01) return '< 0.01%';
@@ -75,7 +75,7 @@ const getFileTypeLabel = (file: FileNode): string => {
 };
 
 export default function FileCenter() {
-  const { currentUser } = useAuthStore();
+  const { currentUser, theme } = useAuthStore();
   const {
     files = [],
     currentPath = [],
@@ -89,6 +89,30 @@ export default function FileCenter() {
 
   const [isLogOpen, setIsLogOpen] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+
+  // 真实存储空间统计状态（区分文件与笔记占用）
+  const [storageStats, setStorageStats] = useState({
+    filesBytes: 0,
+    notesBytes: 0,
+    usedBytes: 0,
+    totalQuotaBytes: 50 * 1024 * 1024 * 1024
+  });
+
+  const loadStorageStats = async () => {
+    try {
+      const stats = await api.files.getStorageStats();
+      setStorageStats(stats);
+    } catch (err) {
+      console.error('获取存储空间统计失败', err);
+    }
+  };
+
+  // 登录用户变化或文件列表增删时，自动刷新存储空间统计
+  useEffect(() => {
+    if (!currentUser) return;
+    loadStorageStats();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser, files.length]);
 
   // 移动端折叠“存储与上传面板”开关
   const [showMobileUploadPanel, setShowMobileUploadPanel] = useState(false);
@@ -247,7 +271,7 @@ export default function FileCenter() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentFolderId, isInPublicSpace, currentUser]);
 
-  // 页内手动刷新当前所在目录（不重置目录位置）
+  // 页内手动刷新当前所在目录（同时刷新存储空间统计）
   const handleManualRefresh = async () => {
     if (!currentUser) return;
     if (currentUser.role === 'guest' && !isInPublicSpace) return;
@@ -258,6 +282,7 @@ export default function FileCenter() {
         : '';
     try {
       await loadServerFiles(isInPublicSpace, virtualSubPath);
+      await loadStorageStats();
       if (currentUser.role === 'admin') {
         await loadAuditLogs();
       }
@@ -461,8 +486,21 @@ export default function FileCenter() {
     gridTemplateColumns: `${colWidths.name}px ${colWidths.type}px ${colWidths.size}px ${colWidths.uploadTime}px minmax(145px, 1fr)`
   };
 
-  const storageData = [{ name: 'Used', value: 42.64 }, { name: 'Free', value: 50 * 1024 - 42.64 }];
-  const COLORS = ['#3b82f6', '#374151'];
+  const freeBytes = Math.max(0, storageStats.totalQuotaBytes - storageStats.usedBytes);
+  const freeSliceColor =
+    theme === 'light' ? '#e5e7eb' : theme === 'eyecare' ? '#dcd4c2' : '#374151';
+
+  const storageChartData = [
+    ...(storageStats.filesBytes > 0
+      ? [{ name: '文件占用', value: storageStats.filesBytes, color: '#3b82f6' }]
+      : []),
+    ...(storageStats.notesBytes > 0
+      ? [{ name: '笔记占用', value: storageStats.notesBytes, color: '#10b981' }]
+      : []),
+    ...(freeBytes > 0 || storageStats.usedBytes === 0
+      ? [{ name: '剩余空间', value: freeBytes > 0 ? freeBytes : storageStats.totalQuotaBytes, color: freeSliceColor }]
+      : [])
+  ];
 
   return (
     <div className="h-full w-full bg-[#1e2128] text-gray-200 p-3 md:p-6 pb-16 md:pb-6 flex flex-col relative select-none overflow-hidden">
@@ -502,24 +540,73 @@ export default function FileCenter() {
             showMobileUploadPanel ? 'flex max-h-96 lg:max-h-none' : 'hidden lg:flex'
           } flex-col gap-4 md:gap-5 overflow-y-auto pr-1 shrink-0`}
         >
-          {/* 存储空间仪表盘 */}
+          {/* 存储空间仪表盘（区分文件蓝 / 笔记绿 / 剩余空间） */}
           <div className="bg-[#2a2d35] p-4 md:p-5 rounded-lg shadow-lg shrink-0">
             <h2 className="text-sm md:text-base font-semibold mb-3 border-b border-gray-600 pb-2">
               存储空间使用情况
             </h2>
-            <div className="h-32 md:h-40 relative">
+            <div className="h-36 md:h-40 relative">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
-                  <Pie data={storageData} innerRadius="70%" outerRadius="90%" dataKey="value" stroke="none">
-                    {storageData.map((_, index) => (
-                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                  <Pie
+                    data={storageChartData}
+                    innerRadius="68%"
+                    outerRadius="90%"
+                    dataKey="value"
+                    stroke="none"
+                    minAngle={storageStats.usedBytes > 0 ? 4 : 0}
+                    paddingAngle={storageStats.filesBytes > 0 && storageStats.notesBytes > 0 ? 1 : 0}
+                  >
+                    {storageChartData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.color} />
                     ))}
                   </Pie>
+                  <Tooltip
+                    formatter={(value: unknown, name: unknown) => [
+                      `${formatBytes(Number(value) || 0)} (${formatQuotaPercent(Number(value) || 0, storageStats.totalQuotaBytes)})`,
+                      String(name ?? '')
+                    ]}
+                    contentStyle={{
+                      backgroundColor: 'var(--bg-surface-alt)',
+                      borderColor: 'var(--border-main)',
+                      borderRadius: '10px',
+                      fontSize: '12px',
+                      color: 'var(--text-primary)'
+                    }}
+                    itemStyle={{ color: 'var(--text-secondary)' }}
+                  />
                 </PieChart>
               </ResponsiveContainer>
               <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                <span className="text-lg md:text-xl font-bold">42.64 MB</span>
-                <span className="text-xs text-gray-400">/ 50 GB (0.08%)</span>
+                <span className="text-base md:text-lg font-bold text-gray-100">
+                  {formatBytes(storageStats.usedBytes)}
+                </span>
+                <span className="text-[11px] text-gray-400">
+                  / {formatBytes(storageStats.totalQuotaBytes)} (
+                  {formatQuotaPercent(storageStats.usedBytes, storageStats.totalQuotaBytes)})
+                </span>
+              </div>
+            </div>
+
+            {/* 文件与笔记占用分项图例 */}
+            <div className="grid grid-cols-2 gap-2 mt-3 pt-2.5 border-t border-gray-700/60 text-[11px]">
+              <div className="flex items-center justify-between bg-[#1e2128] px-2.5 py-1.5 rounded-lg">
+                <span className="flex items-center gap-1.5 text-gray-400">
+                  <span className="w-2.5 h-2.5 rounded-full bg-blue-500 shrink-0" />
+                  <span>文件</span>
+                </span>
+                <span className="font-semibold text-gray-200 truncate ml-1">
+                  {formatBytes(storageStats.filesBytes)}
+                </span>
+              </div>
+              <div className="flex items-center justify-between bg-[#1e2128] px-2.5 py-1.5 rounded-lg">
+                <span className="flex items-center gap-1.5 text-gray-400">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0" />
+                  <span>笔记</span>
+                </span>
+                <span className="font-semibold text-gray-200 truncate ml-1">
+                  {formatBytes(storageStats.notesBytes)}
+                </span>
               </div>
             </div>
           </div>
