@@ -1,4 +1,4 @@
-// src/components/notes/RichTextNoteEditor.tsx
+﻿// src/components/notes/RichTextNoteEditor.tsx
 import { useEffect, useRef, useState } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
@@ -268,7 +268,7 @@ export default function RichTextNoteEditor({
 
       {/* 完整富文本编辑器工具栏（访客/只读模式下自动隐藏） */}
       {editable && (
-        <div className="sticky top-0 z-20 px-3 py-2 bg-[#1c2029]/95 backdrop-blur border-b border-gray-800 rounded-t-2xl flex items-center flex-wrap gap-1 select-none">
+        <div className="rich-editor-toolbar sticky top-0 z-20 px-3 py-2 border-b border-gray-800 rounded-t-2xl flex items-center flex-wrap gap-1 select-none">
           {/* 撤销 / 重做 */}
           <button
             type="button"
@@ -289,7 +289,7 @@ export default function RichTextNoteEditor({
             <Redo2 size={14} />
           </button>
 
-          <span className="w-px h-4 bg-gray-700/80 mx-1" />
+          <span className="w-px h-4 bg-gray-700 mx-1" />
 
           {/* 标题层级 H1 ~ H3 */}
           <button
@@ -317,7 +317,7 @@ export default function RichTextNoteEditor({
             <Heading3 size={14} />
           </button>
 
-          <span className="w-px h-4 bg-gray-700/80 mx-1" />
+          <span className="w-px h-4 bg-gray-700 mx-1" />
 
           {/* 字符样式 */}
           <button
@@ -431,7 +431,7 @@ export default function RichTextNoteEditor({
             )}
           </div>
 
-          <span className="w-px h-4 bg-gray-700/80 mx-1" />
+          <span className="w-px h-4 bg-gray-700 mx-1" />
 
           {/* 对齐方式 */}
           <button
@@ -459,7 +459,7 @@ export default function RichTextNoteEditor({
             <AlignRight size={14} />
           </button>
 
-          <span className="w-px h-4 bg-gray-700/80 mx-1" />
+          <span className="w-px h-4 bg-gray-700 mx-1" />
 
           {/* 列表与核心待办按钮 */}
           <button
@@ -518,7 +518,7 @@ export default function RichTextNoteEditor({
             </>
           )}
 
-          <span className="w-px h-4 bg-gray-700/80 mx-1" />
+          <span className="w-px h-4 bg-gray-700 mx-1" />
 
           {/* 引用 / 分割线 / 链接 / 表格 / 清除格式 */}
           <button
@@ -605,7 +605,7 @@ export default function RichTextNoteEditor({
             </div>
           )}
 
-          <span className="w-px h-4 bg-gray-700/80 mx-1" />
+          <span className="w-px h-4 bg-gray-700 mx-1" />
 
           {/* 插入图片与折叠代码窗 */}
           <button

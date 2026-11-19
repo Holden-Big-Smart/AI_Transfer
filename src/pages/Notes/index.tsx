@@ -2,183 +2,188 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   FolderPlus, Plus, Trash2, Save, Copy, Check, Code2, FileText,
-  ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Folder,
-  Sparkles, RefreshCw, GripVertical, PanelLeftClose, PanelLeftOpen,
-  WrapText, Globe, Lock, Image as ImageIcon, Scissors, Download, Upload, X
+  ChevronLeft, ChevronRight, Folder, Sparkles, RefreshCw, GripVertical,
+  PanelLeftClose, PanelLeftOpen, WrapText, Globe, Lock, Download, Upload, X
 } from 'lucide-react';
-import { useNoteStore, formatDefaultNoteTitle } from '../../store/useNoteStore';
-import type { CodePage, NoteItem, NoteSubBlock } from '../../store/useNoteStore';
+import { useNoteStore, blocksToRichHtml, formatDefaultNoteTitle } from '../../store/useNoteStore';
+import type { CodePage, NoteItem } from '../../store/useNoteStore';
 import { useAuthStore } from '../../store/useAuthStore';
-import { api } from '../../utils/api';
+import { SyntaxHighlightEditor } from '../../components/notes/SyntaxHighlightEditor';
+import RichTextNoteEditor from '../../components/notes/RichTextNoteEditor';
 
 // ============================================================================
-// 方案 A：零依赖语法颜色高亮编译器
+// 富文本 HTML <-> Markdown / 纯文本双向转换工具（支持嵌套待办与 4 级重要度）
 // ============================================================================
-const TOKEN_REGEX =
-  /("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)|(#[^\n]*|\/\/[^\n]*|\/\*[\s\S]*?\*\/|--[^\n]*)|(@[a-zA-Z_]\w*)|\b(def|class|return|import|from|as|if|elif|else|for|while|try|except|finally|with|async|await|yield|lambda|pass|break|continue|in|is|not|and|or|True|False|None|self|const|let|var|function|export|default|interface|type|SELECT|FROM|WHERE|INSERT|INTO|UPDATE|DELETE|JOIN|LEFT|RIGHT|ON|GROUP|BY|ORDER|LIMIT|CREATE|TABLE|DROP|ALTER|VALUES|SET|AND|OR|NOT|NULL)\b|\b(print|len|range|str|int|float|list|dict|set|tuple|open|super|isinstance|enumerate|zip|map|filter|Exception|Promise|Array|Object|String|Number|Boolean|console|window|document)\b|\b([a-zA-Z_]\w*)(?=\s*\()|\b(\d+(?:\.\d+)?)\b/g;
+const PRIORITY_MD_TAG: Record<string, string> = {
+  high: '[紧急] ',
+  medium: '[重要] ',
+  normal: '',
+  low: '[低] '
+};
 
-function escapeHtml(str: string): string {
-  return str
+function escapeHtmlText(str: string): string {
+  return (str || '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 }
 
-function highlightCodeToHtml(code: string): string {
-  if (!code) return '';
-  let result = '';
-  let lastIndex = 0;
-  TOKEN_REGEX.lastIndex = 0;
-
-  let match: RegExpExecArray | null;
-  while ((match = TOKEN_REGEX.exec(code)) !== null) {
-    if (match.index > lastIndex) {
-      result += escapeHtml(code.slice(lastIndex, match.index));
-    }
-    const [full, strTok, commentTok, decoratorTok, kwTok, builtinTok, funcTok, numTok] = match;
-    const safe = escapeHtml(full);
-
-    if (strTok) {
-      result += `<span class="code-tok-str">${safe}</span>`;
-    } else if (commentTok) {
-      result += `<span class="code-tok-comment">${safe}</span>`;
-    } else if (decoratorTok) {
-      result += `<span class="code-tok-decorator">${safe}</span>`;
-    } else if (kwTok) {
-      result += `<span class="code-tok-kw">${safe}</span>`;
-    } else if (builtinTok) {
-      result += `<span class="code-tok-builtin">${safe}</span>`;
-    } else if (funcTok) {
-      result += `<span class="code-tok-func">${safe}</span>`;
-    } else if (numTok) {
-      result += `<span class="code-tok-num">${safe}</span>`;
-    } else {
-      result += safe;
-    }
-    lastIndex = TOKEN_REGEX.lastIndex;
-  }
-
-  if (lastIndex < code.length) {
-    result += escapeHtml(code.slice(lastIndex));
-  }
-  if (code.endsWith('\n')) {
-    result += ' ';
-  }
-  return result;
+function escapeHtmlAttr(str: string): string {
+  return (str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\n/g, '&#10;');
 }
 
-// ============================================================================
-// 零依赖双层叠加语法高亮代码编辑器
-// ============================================================================
-interface HighlightEditorProps {
-  value: string;
-  onChange: (val: string) => void;
-  placeholder?: string;
-  minHeightClass?: string;
-  autoHeight?: boolean;
-  wordWrap?: boolean;
-  readOnly?: boolean;
+function serializeInlineToMarkdown(node: globalThis.Node): string {
+  if (node.nodeType === 3) return node.textContent || '';
+  if (node.nodeType !== 1) return '';
+  const el = node as HTMLElement;
+  const tag = el.tagName.toLowerCase();
+  const inner = Array.from(el.childNodes).map(serializeInlineToMarkdown).join('');
+
+  if (tag === 'strong' || tag === 'b') return inner ? `**${inner}**` : '';
+  if (tag === 'em' || tag === 'i') return inner ? `*${inner}*` : '';
+  if (tag === 's' || tag === 'del' || tag === 'strike') return inner ? `~~${inner}~~` : '';
+  if (tag === 'code') return inner ? `\`${inner}\`` : '';
+  if (tag === 'u') return inner ? `<u>${inner}</u>` : '';
+  if (tag === 'a') {
+    const href = el.getAttribute('href') || '';
+    return href ? `[${inner || href}](${href})` : inner;
+  }
+  if (tag === 'br') return '\n';
+  return inner;
 }
 
-function SyntaxHighlightEditor({
-  value,
-  onChange,
-  placeholder = '# 在此输入或粘贴代码...',
-  minHeightClass = 'h-full',
-  autoHeight = false,
-  wordWrap = false,
-  readOnly = false
-}: HighlightEditorProps) {
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const preRef = useRef<HTMLPreElement>(null);
-  const gutterRef = useRef<HTMLDivElement>(null);
+function serializeBlockToMarkdown(node: globalThis.Node, depth = 0): string {
+  if (node.nodeType === 3) return (node.textContent || '').trim();
+  if (node.nodeType !== 1) return '';
+  const el = node as HTMLElement;
+  const tag = el.tagName.toLowerCase();
+  const dataType = el.getAttribute('data-type');
 
-  const handleScroll = () => {
-    if (!textareaRef.current) return;
-    const { scrollTop, scrollLeft } = textareaRef.current;
-    if (preRef.current) {
-      preRef.current.scrollTop = scrollTop;
-      preRef.current.scrollLeft = scrollLeft;
-    }
-    if (gutterRef.current) {
-      gutterRef.current.scrollTop = scrollTop;
-    }
-  };
+  if (dataType === 'collapsible-code-block') {
+    const lang = el.getAttribute('data-language') || 'python';
+    const code = el.getAttribute('data-code') || '';
+    return `\`\`\`${lang}\n${code}\n\`\`\`\n`;
+  }
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (readOnly) return;
-    if (e.key === 'Tab') {
-      e.preventDefault();
-      const el = e.currentTarget;
-      const start = el.selectionStart;
-      const end = el.selectionEnd;
-      const next = value.substring(0, start) + '    ' + value.substring(end);
-      onChange(next);
-      setTimeout(() => {
-        el.selectionStart = el.selectionEnd = start + 4;
-      }, 0);
-    }
-  };
+  if (dataType === 'collapsible-image-block') {
+    const src = el.getAttribute('data-src') || '';
+    const title = el.getAttribute('data-title') || '图片';
+    const fullUrl = src.startsWith('http') ? src : `${window.location.origin}${src}`;
+    return `![${title}](${fullUrl})\n`;
+  }
 
-  const lineCount = Math.max(1, value.split('\n').length);
-  const extraWrapLines = wordWrap
-    ? value.split('\n').reduce((acc, l) => acc + Math.floor(l.length / 75), 0)
-    : 0;
-  const computedHeight = autoHeight
-    ? `${Math.min(560, Math.max(130, (lineCount + extraWrapLines) * 24 + 36))}px`
-    : undefined;
+  if (tag === 'h1') return `# ${serializeInlineToMarkdown(el)}\n`;
+  if (tag === 'h2') return `## ${serializeInlineToMarkdown(el)}\n`;
+  if (tag === 'h3') return `### ${serializeInlineToMarkdown(el)}\n`;
+  if (tag === 'p') return `${serializeInlineToMarkdown(el)}\n`;
+  if (tag === 'hr') return `---\n`;
 
-  return (
-    <div
-      style={computedHeight ? { height: computedHeight } : undefined}
-      className={`relative w-full ${minHeightClass} bg-[#111318] border border-gray-800 rounded-xl overflow-hidden flex focus-within:border-blue-500/60 transition-colors`}
-    >
-      {!wordWrap && (
-        <div
-          ref={gutterRef}
-          className="w-11 py-4 bg-[#151820] border-r border-gray-800/80 text-right pr-2.5 font-mono text-xs leading-6 text-gray-600 select-none overflow-hidden shrink-0"
-        >
-          {Array.from({ length: lineCount }).map((_, idx) => (
-            <div key={idx}>{idx + 1}</div>
-          ))}
-        </div>
-      )}
+  if (tag === 'blockquote') {
+    const inner = Array.from(el.childNodes)
+      .map((c) => serializeBlockToMarkdown(c, depth))
+      .join('')
+      .trim();
+    return inner
+      .split('\n')
+      .map((line) => `> ${line}`)
+      .join('\n') + '\n';
+  }
 
-      <div className="relative flex-1 h-full overflow-hidden">
-        <pre
-          ref={preRef}
-          aria-hidden="true"
-          className={`code-editor-pre absolute inset-0 m-0 p-4 font-mono text-xs leading-6 overflow-hidden pointer-events-none select-none ${
-            wordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'
-          }`}
-          dangerouslySetInnerHTML={{
-            __html: value
-              ? highlightCodeToHtml(value)
-              : `<span class="code-editor-placeholder">${escapeHtml(placeholder)}</span>`
-          }}
-        />
-        <textarea
-          ref={textareaRef}
-          value={value}
-          readOnly={readOnly}
-          onChange={(e) => !readOnly && onChange(e.target.value)}
-          onScroll={handleScroll}
-          onKeyDown={handleKeyDown}
-          spellCheck={false}
-          autoCapitalize="off"
-          autoComplete="off"
-          className={`code-editor-textarea absolute inset-0 w-full h-full m-0 p-4 font-mono text-xs leading-6 bg-transparent text-transparent resize-none focus:outline-none select-text ${
-            wordWrap ? 'whitespace-pre-wrap break-all overflow-y-auto overflow-x-hidden' : 'whitespace-pre overflow-auto'
-          }`}
-        />
-      </div>
-    </div>
-  );
+  if (tag === 'ul' && dataType === 'taskList') {
+    const items: string[] = [];
+    Array.from(el.children).forEach((child) => {
+      if (child.tagName.toLowerCase() !== 'li') return;
+      const li = child as HTMLElement;
+      const checked = li.getAttribute('data-checked') === 'true';
+      const prio = li.getAttribute('data-priority') || 'normal';
+      const prioTag = PRIORITY_MD_TAG[prio] ?? '';
+      const indent = '  '.repeat(depth);
+
+      const textParts: string[] = [];
+      const subParts: string[] = [];
+      Array.from(li.children).forEach((sub) => {
+        const subTag = sub.tagName.toLowerCase();
+        if (subTag === 'ul' || subTag === 'ol') {
+          subParts.push(serializeBlockToMarkdown(sub, depth + 1).replace(/\n$/, ''));
+        } else if (subTag === 'div') {
+          // 兼容普通 DOM 结构下的内容包装层
+          Array.from(sub.children).forEach((innerChild) => {
+            const icTag = innerChild.tagName.toLowerCase();
+            if (icTag === 'ul' || icTag === 'ol') {
+              subParts.push(serializeBlockToMarkdown(innerChild, depth + 1).replace(/\n$/, ''));
+            } else {
+              textParts.push(serializeInlineToMarkdown(innerChild));
+            }
+          });
+        } else {
+          textParts.push(serializeInlineToMarkdown(sub));
+        }
+      });
+
+      const line = `${indent}- [${checked ? 'x' : ' '}] ${prioTag}${textParts.join(' ').trim()}`;
+      items.push(subParts.length > 0 ? `${line}\n${subParts.join('\n')}` : line);
+    });
+    return items.join('\n') + '\n';
+  }
+
+  if (tag === 'ul' || tag === 'ol') {
+    const items: string[] = [];
+    Array.from(el.children).forEach((child, idx) => {
+      if (child.tagName.toLowerCase() !== 'li') return;
+      const indent = '  '.repeat(depth);
+      const bullet = tag === 'ol' ? `${idx + 1}. ` : '- ';
+      const textParts: string[] = [];
+      const subParts: string[] = [];
+      Array.from(child.children).forEach((sub) => {
+        const subTag = sub.tagName.toLowerCase();
+        if (subTag === 'ul' || subTag === 'ol') {
+          subParts.push(serializeBlockToMarkdown(sub, depth + 1).replace(/\n$/, ''));
+        } else {
+          textParts.push(serializeInlineToMarkdown(sub));
+        }
+      });
+      const line = `${indent}${bullet}${textParts.join(' ').trim()}`;
+      items.push(subParts.length > 0 ? `${line}\n${subParts.join('\n')}` : line);
+    });
+    return items.join('\n') + '\n';
+  }
+
+  if (tag === 'table') {
+    const rows = Array.from(el.querySelectorAll('tr'));
+    if (rows.length === 0) return '';
+    const mdRows = rows.map((tr) => {
+      const cells = Array.from(tr.children).map((c) =>
+        serializeInlineToMarkdown(c).replace(/\|/g, '\\|').trim()
+      );
+      return `| ${cells.join(' | ')} |`;
+    });
+    const colCount = rows[0].children.length;
+    const sep = `| ${Array(colCount).fill('---').join(' | ')} |`;
+    mdRows.splice(1, 0, sep);
+    return mdRows.join('\n') + '\n';
+  }
+
+  return Array.from(el.childNodes)
+    .map((c) => serializeBlockToMarkdown(c, depth))
+    .join('');
 }
 
-// ============================================================================
-// 导入/导出辅助转换工具
-// ============================================================================
+function richHtmlToMarkdown(html: string): string {
+  if (!html) return '';
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  return Array.from(doc.body.childNodes)
+    .map((n) => serializeBlockToMarkdown(n, 0))
+    .filter((s) => s !== '')
+    .join('\n')
+    .trim();
+}
+
 function convertNoteToMarkdown(title: string, pages: CodePage[]): string {
   const lines: string[] = [`# ${title}\n`];
   pages.forEach((p, idx) => {
@@ -186,60 +191,148 @@ function convertNoteToMarkdown(title: string, pages: CodePage[]): string {
     if (p.pageType === 'code') {
       lines.push(`\`\`\`${p.language || 'python'}\n${p.code || ''}\n\`\`\`\n`);
     } else {
-      (p.blocks || []).forEach((b) => {
-        if (b.type === 'text' && b.content.trim()) {
-          lines.push(`${b.content}\n`);
-        } else if (b.type === 'code') {
-          lines.push(`\`\`\`${b.language || 'python'}\n${b.content || ''}\n\`\`\`\n`);
-        } else if (b.type === 'image' && b.imageUrl) {
-          lines.push(`![${b.title || '图片'}](${window.location.origin}${b.imageUrl})\n`);
-        }
-      });
+      const html = typeof p.richContent === 'string' ? p.richContent : blocksToRichHtml(p.blocks || []);
+      lines.push(richHtmlToMarkdown(html) + '\n');
     }
   });
   return lines.join('\n');
 }
 
-function parseMarkdownToBlocks(mdText: string): NoteSubBlock[] {
-  const parts = mdText.split(/```(\w*)\n([\s\S]*?)```/g);
-  const blocks: NoteSubBlock[] = [];
-  for (let i = 0; i < parts.length; i += 3) {
-    const textSeg = parts[i];
-    const langSeg = parts[i + 1];
-    const codeSeg = parts[i + 2];
+function formatMdInlineToHtml(text: string): string {
+  let html = escapeHtmlText(text);
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/~~(.+?)~~/g, '<s>$1</s>');
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  return html;
+}
 
-    if (textSeg !== undefined && (textSeg.trim() || blocks.length === 0)) {
-      blocks.push({
-        id: `blk_md_${Date.now()}_${i}`,
-        type: 'text',
-        content: textSeg.replace(/^\n+|\n+$/g, ''),
-        language: 'python',
-        collapsed: false,
-        title: ''
-      });
-    }
-    if (codeSeg !== undefined) {
-      blocks.push({
-        id: `blk_md_code_${Date.now()}_${i + 1}`,
-        type: 'code',
-        content: codeSeg.replace(/\n$/, ''),
-        language: langSeg || 'python',
-        collapsed: false,
-        title: `代码片段_${blocks.filter((b) => b.type === 'code').length + 1}`
-      });
-    }
+// 将导入的 Markdown 文本（含代码块、图片、多级缩进待办与优先级）解析为 TipTap HTML
+function parseMarkdownToRichHtml(mdText: string): string {
+  const lines = mdText.replace(/\r\n/g, '\n').split('\n');
+  const out: string[] = [];
+  let i = 0;
+
+  interface ParsedTaskNode {
+    checked: boolean;
+    priority: string;
+    text: string;
+    indent: number;
+    children: ParsedTaskNode[];
   }
-  if (blocks.length === 0 || blocks[blocks.length - 1].type !== 'text') {
-    blocks.push({
-      id: `blk_md_tail_${Date.now()}`,
-      type: 'text',
-      content: '',
-      language: 'python',
-      collapsed: false,
-      title: ''
-    });
+
+  const renderTaskTree = (nodes: ParsedTaskNode[]): string => {
+    if (nodes.length === 0) return '';
+    return `<ul data-type="taskList">${nodes
+      .map(
+        (n) =>
+          `<li data-type="taskItem" data-checked="${n.checked}" data-priority="${n.priority}"><p>${formatMdInlineToHtml(n.text)}</p>${renderTaskTree(n.children)}</li>`
+      )
+      .join('')}</ul>`;
+  };
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // 1. 围栏代码块
+    const codeMatch = line.match(/^```(\w*)\s*$/);
+    if (codeMatch) {
+      const lang = codeMatch[1] || 'python';
+      const codeLines: string[] = [];
+      i++;
+      while (i < lines.length && !lines[i].match(/^```\s*$/)) {
+        codeLines.push(lines[i]);
+        i++;
+      }
+      i++;
+      out.push(
+        `<div data-type="collapsible-code-block" data-code="${escapeHtmlAttr(codeLines.join('\n'))}" data-language="${escapeHtmlAttr(lang)}" data-title="导入代码片段" data-collapsed="false"></div>`
+      );
+      continue;
+    }
+
+    // 2. 多级任务待办列表 (- [ ] / - [x]，支持 [紧急]/[重要]/[普通]/[低])
+    if (line.match(/^(\s*)[-*]\s+\[([ xX])\]\s+(.*)$/)) {
+      const roots: ParsedTaskNode[] = [];
+      const stack: ParsedTaskNode[] = [];
+
+      while (i < lines.length) {
+        const tm = lines[i].match(/^(\s*)[-*]\s+\[([ xX])\]\s+(.*)$/);
+        if (!tm) break;
+        const indent = tm[1].replace(/\t/g, '  ').length;
+        const checked = tm[2].toLowerCase() === 'x';
+        let body = tm[3].trim();
+        let priority = 'normal';
+
+        if (body.startsWith('[紧急]')) {
+          priority = 'high';
+          body = body.slice(4).trim();
+        } else if (body.startsWith('[重要]')) {
+          priority = 'medium';
+          body = body.slice(4).trim();
+        } else if (body.startsWith('[普通]')) {
+          priority = 'normal';
+          body = body.slice(4).trim();
+        } else if (body.startsWith('[低]')) {
+          priority = 'low';
+          body = body.slice(3).trim();
+        }
+
+        const taskNode: ParsedTaskNode = { checked, priority, text: body, indent, children: [] };
+        while (stack.length > 0 && stack[stack.length - 1].indent >= indent) {
+          stack.pop();
+        }
+        if (stack.length === 0) {
+          roots.push(taskNode);
+        } else {
+          stack[stack.length - 1].children.push(taskNode);
+        }
+        stack.push(taskNode);
+        i++;
+      }
+
+      out.push(renderTaskTree(roots));
+      continue;
+    }
+
+    // 3. 图片行
+    const imgMatch = line.match(/^!\[([^\]]*)\]\(([^)]+)\)\s*$/);
+    if (imgMatch) {
+      out.push(
+        `<div data-type="collapsible-image-block" data-src="${escapeHtmlAttr(imgMatch[2])}" data-title="${escapeHtmlAttr(imgMatch[1] || 'image.png')}" data-width="75" data-collapsed="false"></div>`
+      );
+      i++;
+      continue;
+    }
+
+    // 4. 标题 / 分割线 / 引用 / 普通列表 / 段落
+    if (line.startsWith('### ')) {
+      out.push(`<h3>${formatMdInlineToHtml(line.slice(4))}</h3>`);
+    } else if (line.startsWith('## ')) {
+      out.push(`<h2>${formatMdInlineToHtml(line.slice(3))}</h2>`);
+    } else if (line.startsWith('# ')) {
+      out.push(`<h1>${formatMdInlineToHtml(line.slice(2))}</h1>`);
+    } else if (line.match(/^---+\s*$/)) {
+      out.push('<hr>');
+    } else if (line.startsWith('> ')) {
+      out.push(`<blockquote><p>${formatMdInlineToHtml(line.slice(2))}</p></blockquote>`);
+    } else if (line.match(/^[-*]\s+/)) {
+      const listItems: string[] = [];
+      while (i < lines.length && lines[i].match(/^[-*]\s+/) && !lines[i].match(/^[-*]\s+\[[ xX]\]/)) {
+        listItems.push(`<li><p>${formatMdInlineToHtml(lines[i].replace(/^[-*]\s+/, ''))}</p></li>`);
+        i++;
+      }
+      out.push(`<ul>${listItems.join('')}</ul>`);
+      continue;
+    } else if (line.trim() === '') {
+      // 跳过冗余连续空行
+    } else {
+      out.push(`<p>${formatMdInlineToHtml(line)}</p>`);
+    }
+    i++;
   }
-  return blocks;
+
+  return out.length > 0 ? out.join('') : '<p></p>';
 }
 
 function triggerBrowserDownload(filename: string, content: string, mime = 'text/plain;charset=utf-8') {
@@ -252,11 +345,6 @@ function triggerBrowserDownload(filename: string, content: string, mime = 'text/
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
-}
-
-// 时间戳唯一 ID：把 Date.now / Math.random 收敛到事件处理路径，避免在渲染期被调用
-function makeBlockId(prefix: string): string {
-  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 }
 
 // ============================================================================
@@ -278,21 +366,25 @@ export default function Notes() {
   const [isPublic, setIsPublic] = useState(false);
   const [activeTabIdx, setActiveTabIdx] = useState(0);
 
-  // 占位提示中的默认标题（惰性初始化一次，避免在渲染期反复读取系统时间）
-  const [autoTitlePlaceholder] = useState(() => formatDefaultNoteTitle());
-
   // 左侧目录折叠与移动端抽屉状态
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(() => {
     return localStorage.getItem('notes_sidebar_collapsed') === 'true';
   });
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
 
-  // 代码自动换行状态
+  // 代码自动换行状态（与富文本内嵌折叠代码窗全局联动）
   const [wordWrap, setWordWrap] = useState<boolean>(() => {
     return localStorage.getItem('notes_code_word_wrap') === 'true';
   });
 
-  // 导出下拉菜单与导入弹窗状态
+  useEffect(() => {
+    const syncWrap = () => {
+      setWordWrap(localStorage.getItem('notes_code_word_wrap') === 'true');
+    };
+    window.addEventListener('notes_word_wrap_change', syncWrap);
+    return () => window.removeEventListener('notes_word_wrap_change', syncWrap);
+  }, []);
+
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [importModal, setImportModal] = useState<{
     isOpen: boolean;
@@ -320,6 +412,7 @@ export default function Notes() {
     setWordWrap((prev) => {
       const next = !prev;
       localStorage.setItem('notes_code_word_wrap', String(next));
+      window.dispatchEvent(new CustomEvent('notes_word_wrap_change'));
       return next;
     });
   };
@@ -332,17 +425,6 @@ export default function Notes() {
   const [dragTabIdx, setDragTabIdx] = useState<number | null>(null);
   const [dragOverTabIdx, setDragOverTabIdx] = useState<number | null>(null);
 
-  const [focusedBlockId, setFocusedBlockId] = useState<string | null>(null);
-  const [selectedImageBlockId, setSelectedImageBlockId] = useState<string | null>(null);
-  const [internalImageClip, setInternalImageClip] = useState<{
-    url: string;
-    title: string;
-    width: number;
-  } | null>(null);
-  const [isUploadingImage, setIsUploadingImage] = useState(false);
-
-  const textBlockRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
-  const imageInputRef = useRef<HTMLInputElement>(null);
   const importFileInputRef = useRef<HTMLInputElement>(null);
 
   const [isAddingFolder, setIsAddingFolder] = useState(false);
@@ -350,6 +432,11 @@ export default function Notes() {
 
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
+
+  const showToast = (msg: string, ms = 2200) => {
+    setSyncNotice(msg);
+    setTimeout(() => setSyncNotice(null), ms);
+  };
 
   useEffect(() => {
     loadNotesData();
@@ -369,14 +456,12 @@ export default function Notes() {
       setIsPublic(Boolean(activeNote.isPublic));
       setActiveTabIdx((prev) => (prev < (activeNote.codePages?.length || 1) ? prev : 0));
       setIsDirty(false);
-      setSelectedImageBlockId(null);
     } else {
       setTitle('');
       setCodePages([]);
       setIsPublic(false);
       setActiveTabIdx(0);
       setIsDirty(false);
-      setSelectedImageBlockId(null);
     }
   }, [activeNote]);
 
@@ -388,8 +473,7 @@ export default function Notes() {
         if (!isDirty) {
           await loadNotesData(true);
           setHasRemoteUpdate(false);
-          setSyncNotice('⚡ 已自动同步远端最新状态');
-          setTimeout(() => setSyncNotice(null), 2500);
+          showToast('⚡ 已自动同步远端最新状态', 2500);
         } else {
           setHasRemoteUpdate(true);
         }
@@ -413,43 +497,13 @@ export default function Notes() {
     setIsDirty(true);
   };
 
-  const showNotice = (text: string, ms = 2200) => {
-    setSyncNotice(text);
-    setTimeout(() => setSyncNotice(null), ms);
-  };
-
-  // 在指定索引位置插入新文本行并自动聚焦（供两张连续图片之间或按回车时插入文字）
-  const insertTextLineAtBlockIndex = (insertIdx: number) => {
-    if (!currentPage || currentPage.pageType !== 'note' || !canEditActiveNote) return;
-    const newTextId = makeBlockId('blk_txt');
-    const newTextBlock: NoteSubBlock = {
-      id: newTextId,
-      type: 'text',
-      content: '',
-      language: 'python',
-      collapsed: false,
-      title: ''
-    };
-    const nextBlocks = [...(currentPage.blocks || [])];
-    nextBlocks.splice(insertIdx, 0, newTextBlock);
-    updateCurrentPage((p) => ({ ...p, blocks: nextBlocks }));
-    setSelectedImageBlockId(null);
-    setFocusedBlockId(newTextId);
-    setTimeout(() => {
-      textBlockRefs.current[newTextId]?.focus();
-    }, 30);
-  };
-
   const handleManualRefresh = async () => {
     setIsRefreshing(true);
     await loadNotesData(true);
     setIsDirty(false);
     setHasRemoteUpdate(false);
-    setSyncNotice('已刷新至最新云端状态');
-    setTimeout(() => {
-      setIsRefreshing(false);
-      setSyncNotice(null);
-    }, 1200);
+    showToast('已刷新至最新云端状态', 1200);
+    setTimeout(() => setIsRefreshing(false), 600);
   };
 
   const handleCreateRecord = async (initialType: 'note' | 'code') => {
@@ -458,24 +512,16 @@ export default function Notes() {
     const firstPage: CodePage =
       initialType === 'note'
         ? {
-            id: makeBlockId('pg'),
+            id: `pg_${Date.now()}`,
             title: '笔记_1',
             pageType: 'note',
             language: 'python',
             code: '',
-            blocks: [
-              {
-                id: makeBlockId('blk'),
-                type: 'text',
-                content: '',
-                language: 'python',
-                collapsed: false,
-                title: ''
-              }
-            ]
+            blocks: [],
+            richContent: '<p></p>'
           }
         : {
-            id: makeBlockId('pg'),
+            id: `pg_${Date.now()}`,
             title: '片段_1.py',
             pageType: 'code',
             language: 'python',
@@ -500,24 +546,16 @@ export default function Notes() {
     const newPage: CodePage =
       pageType === 'note'
         ? {
-            id: makeBlockId('pg'),
+            id: `pg_${Date.now()}`,
             title: `笔记_${sameTypeCount}`,
             pageType: 'note',
             language: 'python',
             code: '',
-            blocks: [
-              {
-                id: makeBlockId('blk'),
-                type: 'text',
-                content: '',
-                language: 'python',
-                collapsed: false,
-                title: ''
-              }
-            ]
+            blocks: [],
+            richContent: '<p></p>'
           }
         : {
-            id: makeBlockId('pg'),
+            id: `pg_${Date.now()}`,
             title: `片段_${sameTypeCount}.py`,
             pageType: 'code',
             language: 'python',
@@ -590,7 +628,7 @@ export default function Notes() {
     if (activeNoteId) {
       const ok = await toggleNotePublic(activeNoteId, nextState);
       if (ok) {
-        showNotice(nextState ? '🌐 已设为公开 (访客可见)' : '🔒 已设为仅自己可见', 2000);
+        showToast(nextState ? '🌐 已设为公开 (访客可见)' : '🔒 已设为仅自己可见', 2000);
       }
     } else {
       setIsDirty(true);
@@ -598,310 +636,7 @@ export default function Notes() {
   };
 
   // ============================================================================
-  // Notion 式流式块插入算法：自动清理连续图片/代码块之间的多余空文本块
-  // ============================================================================
-  const insertSubBlockAtCursor = (newBlock: NoteSubBlock, targetTextBlockId?: string) => {
-    if (!currentPage || currentPage.pageType !== 'note' || !canEditActiveNote) return;
-
-    const blocks =
-      currentPage.blocks && currentPage.blocks.length > 0
-        ? [...currentPage.blocks]
-        : [
-            {
-              id: makeBlockId('blk'),
-              type: 'text' as const,
-              content: '',
-              language: 'python',
-              collapsed: false,
-              title: ''
-            }
-          ];
-
-    const lookupId = targetTextBlockId || focusedBlockId;
-    let targetIdx = blocks.findIndex((b) => b.id === lookupId && b.type === 'text');
-    if (targetIdx === -1) {
-      for (let i = blocks.length - 1; i >= 0; i--) {
-        if (blocks[i].type === 'text') {
-          targetIdx = i;
-          break;
-        }
-      }
-    }
-
-    if (targetIdx === -1) {
-      const trailingId = makeBlockId('blk_txt');
-      const trailingText: NoteSubBlock = {
-        id: trailingId,
-        type: 'text',
-        content: '',
-        language: 'python',
-        collapsed: false,
-        title: ''
-      };
-      updateCurrentPage((p) => ({ ...p, blocks: [...blocks, newBlock, trailingText] }));
-      setFocusedBlockId(trailingId);
-      return;
-    }
-
-    const targetBlock = blocks[targetIdx];
-    const el = textBlockRefs.current[targetBlock.id];
-    const cursorPos = el ? el.selectionStart : targetBlock.content.length;
-
-    const beforeText = targetBlock.content.slice(0, cursorPos);
-    const afterText = targetBlock.content.slice(cursorPos);
-
-    const replacement: NoteSubBlock[] = [];
-
-    // 只有光标前半段确实有文字时才保留前半段文本块，消除连续粘贴图片时中间残留的空文本框
-    if (beforeText.length > 0) {
-      replacement.push({ ...targetBlock, content: beforeText });
-    }
-
-    replacement.push(newBlock);
-
-    const afterBlockId = makeBlockId('blk_txt');
-    const isLastBlock = targetIdx === blocks.length - 1;
-    if (afterText.length > 0 || isLastBlock) {
-      replacement.push({
-        id: afterBlockId,
-        type: 'text',
-        content: afterText,
-        language: 'python',
-        collapsed: false,
-        title: ''
-      });
-    }
-
-    blocks.splice(targetIdx, 1, ...replacement);
-
-    // 清理相邻的空文本块，确保最末尾始终有一个尾随文本输入点
-    const cleaned: NoteSubBlock[] = [];
-    for (let i = 0; i < blocks.length; i++) {
-      const curr = blocks[i];
-      const prev = cleaned[cleaned.length - 1];
-      if (curr.type === 'text' && prev && prev.type === 'text' && !prev.content && !curr.content) {
-        continue;
-      }
-      cleaned.push(curr);
-    }
-    if (cleaned.length === 0 || cleaned[cleaned.length - 1].type !== 'text') {
-      cleaned.push({
-        id: afterBlockId,
-        type: 'text',
-        content: '',
-        language: 'python',
-        collapsed: false,
-        title: ''
-      });
-    }
-
-    const lastTextBlk = cleaned[cleaned.length - 1];
-    updateCurrentPage((p) => ({ ...p, blocks: cleaned }));
-    setFocusedBlockId(lastTextBlk.id);
-    setTimeout(() => {
-      textBlockRefs.current[lastTextBlk.id]?.focus();
-    }, 30);
-  };
-
-  const handleInsertCollapsibleCodeWindow = () => {
-    if (!currentPage || currentPage.pageType !== 'note') return;
-    const blocks = currentPage.blocks || [];
-    const newCodeBlock: NoteSubBlock = {
-      id: makeBlockId('blk_code'),
-      type: 'code',
-      content: '',
-      language: 'python',
-      collapsed: false,
-      title: `代码片段_${blocks.filter((b) => b.type === 'code').length + 1}.py`
-    };
-    insertSubBlockAtCursor(newCodeBlock);
-  };
-
-  const uploadAndInsertImage = async (file: File | Blob, targetBlockId?: string) => {
-    if (!canEditActiveNote) return;
-    setIsUploadingImage(true);
-    try {
-      const res = await api.notes.uploadImage(
-        file,
-        file instanceof File ? file.name : `paste_${Date.now()}.png`
-      );
-      const newImgBlock: NoteSubBlock = {
-        id: makeBlockId('blk_img'),
-        type: 'image',
-        content: '',
-        language: 'image',
-        collapsed: false,
-        title: file instanceof File ? file.name : 'image.png',
-        imageUrl: res.url,
-        imageWidth: 75
-      };
-      insertSubBlockAtCursor(newImgBlock, targetBlockId);
-      showNotice('🖼️ 图片已嵌入画布，记得点击保存笔记');
-    } catch (err) {
-      alert(`图片上传失败: ${err instanceof Error ? err.message : '未知错误'}`);
-    } finally {
-      setIsUploadingImage(false);
-    }
-  };
-
-  const handleTextPaste = async (
-    e: React.ClipboardEvent<HTMLTextAreaElement>,
-    blockId: string
-  ) => {
-    if (!canEditActiveNote) return;
-    const items = e.clipboardData?.items;
-    if (items) {
-      for (let i = 0; i < items.length; i++) {
-        const item = items[i];
-        if (item.type.startsWith('image/')) {
-          e.preventDefault();
-          const blob = item.getAsFile();
-          if (blob) {
-            await uploadAndInsertImage(blob, blockId);
-          }
-          return;
-        }
-      }
-    }
-
-    const pastedText = e.clipboardData?.getData('text/plain') || '';
-    if (pastedText.startsWith('__NOTE_IMG__:')) {
-      e.preventDefault();
-      const imgUrl = pastedText.replace('__NOTE_IMG__:', '').trim();
-      const newImgBlock: NoteSubBlock = {
-        id: makeBlockId('blk_img'),
-        type: 'image',
-        content: '',
-        language: 'image',
-        collapsed: false,
-        title: internalImageClip?.title || 'image.png',
-        imageUrl: imgUrl,
-        imageWidth: internalImageClip?.width || 75
-      };
-      insertSubBlockAtCursor(newImgBlock, blockId);
-    }
-  };
-
-  const handleCopyImageBlock = async (block: NoteSubBlock) => {
-    if (!block.imageUrl) return;
-    setInternalImageClip({
-      url: block.imageUrl,
-      title: block.title || 'image.png',
-      width: block.imageWidth || 75
-    });
-
-    try {
-      const response = await fetch(block.imageUrl);
-      const blob = await response.blob();
-      if (window.ClipboardItem && navigator.clipboard?.write) {
-        const pngBlob = blob.type === 'image/png' ? blob : new Blob([blob], { type: 'image/png' });
-        await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlob })]);
-      } else {
-        await navigator.clipboard.writeText(`__NOTE_IMG__:${block.imageUrl}`);
-      }
-    } catch {
-      await navigator.clipboard.writeText(`__NOTE_IMG__:${block.imageUrl}`).catch(() => {});
-    }
-
-    setCopiedKey(`img_copy_${block.id}`);
-    showNotice('📋 图片已复制，可在任意位置按 Ctrl+V 粘贴', 1800);
-    setTimeout(() => setCopiedKey(null), 1800);
-  };
-
-  const handleCutImageBlock = async (block: NoteSubBlock) => {
-    if (!canEditActiveNote || !block.imageUrl) return;
-    await handleCopyImageBlock(block);
-    handleRemoveSubBlock(block.id);
-    setSelectedImageBlockId(null);
-    showNotice('✂️ 图片已剪切，可在目标位置按 Ctrl+V 粘贴', 2000);
-  };
-
-  const handleRemoveSubBlock = (blockId: string) => {
-    if (!currentPage || currentPage.pageType !== 'note' || !canEditActiveNote) return;
-    const raw = (currentPage.blocks || []).filter((b) => b.id !== blockId);
-    const merged: NoteSubBlock[] = [];
-
-    for (const blk of raw) {
-      const prev = merged[merged.length - 1];
-      if (prev && prev.type === 'text' && blk.type === 'text') {
-        prev.content =
-          prev.content && blk.content ? `${prev.content}\n${blk.content}` : `${prev.content}${blk.content}`;
-      } else {
-        merged.push({ ...blk });
-      }
-    }
-    if (merged.length === 0 || merged[merged.length - 1].type !== 'text') {
-      merged.push({
-        id: makeBlockId('blk'),
-        type: 'text',
-        content: '',
-        language: 'python',
-        collapsed: false,
-        title: ''
-      });
-    }
-    updateCurrentPage((p) => ({ ...p, blocks: merged }));
-  };
-
-  // 选中图片时的快捷键监听（Ctrl+C 复制 / Ctrl+X 剪切 / Delete 删除 / Enter 在图片下方输入文字）
-  useEffect(() => {
-    if (!selectedImageBlockId || !currentPage || currentPage.pageType !== 'note') return;
-    const blocks = currentPage.blocks || [];
-    const imgIdx = blocks.findIndex((b) => b.id === selectedImageBlockId && b.type === 'image');
-    if (imgIdx === -1) return;
-    const imgBlock = blocks[imgIdx];
-
-    const onKeyDown = (e: KeyboardEvent) => {
-      const activeTag = document.activeElement?.tagName.toLowerCase();
-      if (activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select') return;
-
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
-        e.preventDefault();
-        handleCopyImageBlock(imgBlock);
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'x') {
-        if (!canEditActiveNote) return;
-        e.preventDefault();
-        handleCutImageBlock(imgBlock);
-      } else if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (!canEditActiveNote) return;
-        e.preventDefault();
-        handleRemoveSubBlock(imgBlock.id);
-        setSelectedImageBlockId(null);
-      } else if (e.key === 'Enter') {
-        if (!canEditActiveNote) return;
-        e.preventDefault();
-        insertTextLineAtBlockIndex(imgIdx + 1);
-      }
-    };
-
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedImageBlockId, currentPage, canEditActiveNote]);
-
-  const handleInsertTextFormat = (prefix: string, suffix: string = '') => {
-    if (!currentPage || currentPage.pageType !== 'note' || !canEditActiveNote) return;
-    const blocks = currentPage.blocks || [];
-    const targetId = focusedBlockId || blocks.find((b) => b.type === 'text')?.id;
-    if (!targetId) return;
-
-    const el = textBlockRefs.current[targetId];
-    updateCurrentPage((p) => ({
-      ...p,
-      blocks: (p.blocks || []).map((b) => {
-        if (b.id !== targetId) return b;
-        const start = el ? el.selectionStart : b.content.length;
-        const end = el ? el.selectionEnd : b.content.length;
-        const selected = b.content.substring(start, end) || '文本';
-        const nextContent =
-          b.content.substring(0, start) + prefix + selected + suffix + b.content.substring(end);
-        return { ...b, content: nextContent };
-      })
-    }));
-  };
-
-  // ============================================================================
-  // 导入 / 导出核心处理函数
+  // 导入 / 导出核心处理
   // ============================================================================
   const handleExportCurrentMarkdown = () => {
     const safeName = (title || '未命名笔记').replace(/[\\/:*?"<>|]/g, '_');
@@ -914,7 +649,7 @@ export default function Notes() {
     const safeName = (title || '未命名笔记').replace(/[\\/:*?"<>|]/g, '_');
     const folderObj = folders.find((f) => f.id === activeNote?.folderId);
     const payload = {
-      version: '2.0',
+      version: '2.1',
       exportedAt: new Date().toISOString(),
       folders: folderObj ? [{ name: folderObj.name }] : [],
       notes: [
@@ -944,7 +679,7 @@ export default function Notes() {
       codePages: n.codePages
     }));
     const payload = {
-      version: '2.0',
+      version: '2.1',
       exportedAt: new Date().toISOString(),
       folders: folders.map((f) => ({ name: f.name })),
       notes: exportNotes
@@ -974,7 +709,6 @@ export default function Notes() {
     if (files.length === 0) return;
 
     try {
-      // 1. 识别是否包含 .note.json 备份包
       const jsonBackupFiles = files.filter(
         (f) => f.name.endsWith('.note.json') || f.name.endsWith('.json')
       );
@@ -996,7 +730,6 @@ export default function Notes() {
         }
       }
 
-      // 2. 处理普通代码文件与 Markdown 文档 (.py, .js, .ts, .sql, .md, .txt 等)
       if (otherFiles.length > 0) {
         const importedPages: CodePage[] = [];
         for (const file of otherFiles) {
@@ -1005,12 +738,13 @@ export default function Notes() {
 
           if (ext === 'md' || ext === 'markdown') {
             importedPages.push({
-              id: makeBlockId('pg_imp'),
+              id: `pg_imp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
               title: file.name.replace(/\.(md|markdown)$/i, ''),
               pageType: 'note',
               language: 'markdown',
               code: '',
-              blocks: parseMarkdownToBlocks(text)
+              blocks: [],
+              richContent: parseMarkdownToRichHtml(text)
             });
           } else {
             const langMap: Record<string, string> = {
@@ -1023,7 +757,7 @@ export default function Notes() {
               json: 'json'
             };
             importedPages.push({
-              id: makeBlockId('pg_imp'),
+              id: `pg_imp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
               title: file.name,
               pageType: 'code',
               language: langMap[ext] || 'python',
@@ -1061,20 +795,21 @@ export default function Notes() {
       }
 
       setImportModal({ isOpen: false, files: [], targetMode: 'new_note' });
-      showNotice('✅ 导入成功并已同步至云端', 2500);
+      showToast('✅ 导入成功并已同步至云端', 2500);
     } catch (err) {
       alert(`导入失败: ${err instanceof Error ? err.message : '未知错误'}`);
     }
   };
 
+  // 提取整洁文本供“一键复制本页”使用
   const getPageCopyableText = (page: CodePage | undefined): string => {
     if (!page) return '';
     if (page.pageType === 'code') return page.code || '';
-    return (page.blocks || [])
-      .filter((b) => b.type !== 'image')
-      .map((b) => b.content)
-      .filter((t) => t !== '')
-      .join('\n\n');
+    const html =
+      typeof page.richContent === 'string'
+        ? page.richContent
+        : blocksToRichHtml(page.blocks || []);
+    return richHtmlToMarkdown(html);
   };
 
   const copyText = (text: string, key: string) => {
@@ -1093,18 +828,6 @@ export default function Notes() {
 
   return (
     <div className="h-full w-full bg-[#1e2128] text-gray-200 flex overflow-hidden select-none pb-14 md:pb-0 relative">
-      {/* 隐藏的图片上传与笔记导入文件选择器 */}
-      <input
-        type="file"
-        ref={imageInputRef}
-        accept="image/*"
-        className="hidden"
-        onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file) uploadAndInsertImage(file);
-          e.target.value = '';
-        }}
-      />
       <input
         type="file"
         ref={importFileInputRef}
@@ -1276,7 +999,7 @@ export default function Notes() {
                   }}
                   className={`group p-3 rounded-xl cursor-pointer border transition-all ${
                     activeNoteId === item.id
-                      ? 'bg-[#262a34] border-blue-500/40 text-white shadow'
+                      ? 'bg-[#262a34] border-blue-500/40 text-gray-100 shadow'
                       : 'bg-[#1e2128]/60 border-transparent text-gray-300 hover:bg-[#252830]'
                   }`}
                 >
@@ -1340,7 +1063,7 @@ export default function Notes() {
                 setIsDirty(true);
               }}
               placeholder={
-                isGuest ? '公开笔记只读视图' : `留空保存将自动命名为: ${autoTitlePlaceholder}`
+                isGuest ? '公开笔记只读视图' : `留空保存将自动命名为: ${formatDefaultNoteTitle()}`
               }
               className="flex-1 bg-[#1a1c23] border border-gray-700 rounded-xl px-3 py-2 text-xs text-gray-100 font-semibold focus:outline-none focus:border-blue-500"
             />
@@ -1368,7 +1091,6 @@ export default function Notes() {
               </button>
             )}
 
-            {/* 导入按钮 */}
             {!isGuest && (
               <button
                 onClick={() => importFileInputRef.current?.click()}
@@ -1380,7 +1102,6 @@ export default function Notes() {
               </button>
             )}
 
-            {/* 导出下拉菜单 */}
             {activeNote && (
               <div className="relative">
                 <button
@@ -1542,64 +1263,26 @@ export default function Notes() {
           )}
         </div>
 
-        {/* 次级控制工具栏 */}
+        {/* 次级页签信息与跨端复制控制条 */}
         {currentPage && (
           <div className="px-3 md:px-6 py-2 bg-[#191c23] border-b border-gray-800 flex items-center justify-between flex-wrap gap-2">
-            <div className="flex items-center gap-2 flex-wrap">
-              <div className="flex items-center gap-1.5">
-                <span className="text-[11px] px-2 py-0.5 rounded bg-gray-800 text-gray-300">
-                  {currentPage.pageType === 'note' ? '📝 笔记页' : '💻 代码页'}
-                </span>
-                <input
-                  type="text"
-                  value={currentPage.title}
-                  readOnly={!canEditActiveNote}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    updateCurrentPage((p) => ({ ...p, title: val }));
-                  }}
-                  className="bg-[#111318] border border-gray-700 rounded-lg px-2.5 py-1 text-xs text-blue-300 font-mono focus:outline-none focus:border-blue-500 w-36 md:w-44"
-                />
-                <span className="text-xs text-gray-500">
-                  ({activeTabIdx + 1}/{codePages.length})
-                </span>
-              </div>
-
-              {currentPage.pageType === 'note' && canEditActiveNote && (
-                <div className="flex items-center gap-1.5 pl-2 border-l border-gray-800 flex-wrap">
-                  <button
-                    onClick={() => handleInsertTextFormat('**', '**')}
-                    className="px-2 py-1 text-xs bg-[#252830] hover:bg-gray-700 rounded text-gray-200 font-bold"
-                    title="加粗文本"
-                  >
-                    B
-                  </button>
-                  <button
-                    onClick={() => handleInsertTextFormat('### ')}
-                    className="px-2 py-1 text-xs bg-[#252830] hover:bg-gray-700 rounded text-gray-200"
-                    title="插入标题"
-                  >
-                    H3
-                  </button>
-                  <button
-                    onClick={() => imageInputRef.current?.click()}
-                    disabled={isUploadingImage}
-                    className="flex items-center gap-1 px-2.5 py-1 text-xs bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 rounded-lg transition-colors"
-                    title="上传图片插入到当前光标处（也支持直接在画布按 Ctrl+V 粘贴截图）"
-                  >
-                    <ImageIcon size={13} />
-                    <span>{isUploadingImage ? '上传中...' : '插入图片'}</span>
-                  </button>
-                  <button
-                    onClick={handleInsertCollapsibleCodeWindow}
-                    className="flex items-center gap-1 px-2.5 py-1 text-xs bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors shadow"
-                    title="在当前光标位置直接插入一个可展开/收起的代码编辑窗口"
-                  >
-                    <Code2 size={13} />
-                    <span>插入代码块窗口</span>
-                  </button>
-                </div>
-              )}
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] px-2 py-0.5 rounded bg-gray-800 text-gray-300">
+                {currentPage.pageType === 'note' ? '📝 富文本笔记页' : '💻 代码页'}
+              </span>
+              <input
+                type="text"
+                value={currentPage.title}
+                readOnly={!canEditActiveNote}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  updateCurrentPage((p) => ({ ...p, title: val }));
+                }}
+                className="bg-[#111318] border border-gray-700 rounded-lg px-2.5 py-1 text-xs text-blue-300 font-mono focus:outline-none focus:border-blue-500 w-36 md:w-44"
+              />
+              <span className="text-xs text-gray-500">
+                ({activeTabIdx + 1}/{codePages.length})
+              </span>
             </div>
 
             <div className="flex items-center gap-1.5 flex-wrap">
@@ -1660,12 +1343,9 @@ export default function Notes() {
           </div>
         )}
 
-        {/* 主体统一编辑画布（Notion 式无缝图文融合体验） */}
+        {/* 主体统一编辑画布 */}
         <div
-          onClick={() => {
-            setSelectedImageBlockId(null);
-            setShowExportMenu(false);
-          }}
+          onClick={() => setShowExportMenu(false)}
           className="flex-1 p-3 md:p-6 overflow-y-auto"
         >
           {!currentPage ? (
@@ -1678,408 +1358,21 @@ export default function Notes() {
               readOnly={!canEditActiveNote}
               wordWrap={wordWrap}
               onChange={(val) => updateCurrentPage((p) => ({ ...p, code: val }))}
-              placeholder="# 在此输入或粘贴代码（支持语法颜色标注、Tab 缩进与右上角自动换行切换）..."
+              placeholder="# 在此输入或粘贴代码（支持三主题语法颜色标注、Tab 缩进与右上角自动换行切换）..."
               minHeightClass="h-full"
             />
           ) : (
-            /* Notion 式一体化无框流式文档画布 */
-            <div
-              onClick={(e) => {
-                if (e.target === e.currentTarget && canEditActiveNote) {
-                  const blocks = currentPage.blocks || [];
-                  const lastBlk = blocks[blocks.length - 1];
-                  if (lastBlk && lastBlk.type === 'text') {
-                    textBlockRefs.current[lastBlk.id]?.focus();
-                  } else {
-                    insertTextLineAtBlockIndex(blocks.length);
-                  }
-                }
-              }}
-              className="max-w-4xl mx-auto min-h-full bg-[#1b1e26] border border-gray-800/80 rounded-2xl px-5 md:px-10 py-6 md:py-8 shadow-inner space-y-1.5 cursor-text"
-            >
-              {(currentPage.blocks || []).map((block, bIdx) => {
-                const allBlocks = currentPage.blocks || [];
-                const prevBlock = bIdx > 0 ? allBlocks[bIdx - 1] : null;
-                const showInsertLineAbove =
-                  canEditActiveNote && block.type !== 'text' && (!prevBlock || prevBlock.type !== 'text');
-
-                // 1. Notion 式无边框自适应文本段落（仅在整页完全空白时显示占位提示）
-                if (block.type === 'text') {
-                  const isOnlyEmptyBlock = allBlocks.length === 1 && !block.content;
-                  const lineRows = Math.max(1, block.content.split('\n').length);
-
-                  return (
-                    <textarea
-                      key={block.id}
-                      ref={(el) => {
-                        textBlockRefs.current[block.id] = el;
-                      }}
-                      rows={lineRows}
-                      readOnly={!canEditActiveNote}
-                      value={block.content}
-                      onFocus={() => {
-                        setFocusedBlockId(block.id);
-                        setSelectedImageBlockId(null);
-                      }}
-                      onPaste={(e) => handleTextPaste(e, block.id)}
-                      onKeyDown={(e) => {
-                        // 在空文本段按 Backspace 时，若不是唯一段落则自动回收该空行
-                        if (
-                          canEditActiveNote &&
-                          e.key === 'Backspace' &&
-                          !block.content &&
-                          allBlocks.length > 1 &&
-                          bIdx < allBlocks.length - 1
-                        ) {
-                          e.preventDefault();
-                          handleRemoveSubBlock(block.id);
-                        }
-                      }}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        updateCurrentPage((p) => ({
-                          ...p,
-                          blocks: (p.blocks || []).map((b) =>
-                            b.id === block.id ? { ...b, content: val } : b
-                          )
-                        }));
-                      }}
-                      placeholder={
-                        isOnlyEmptyBlock
-                          ? '在此输入笔记内容... 支持直接按 Ctrl+V 粘贴截图/图片（图文自动无缝融合），或点击上方嵌入可折叠代码窗。'
-                          : ''
-                      }
-                      className="w-full bg-transparent border-none px-1 py-1 text-sm text-gray-100 leading-relaxed focus:outline-none resize-none overflow-hidden select-text block"
-                    />
-                  );
-                }
-
-                // 2. 内嵌图片块（支持像代码块一样收起为长条状，且保留复制/剪切按钮）
-                if (block.type === 'image') {
-                  const isImgSelected = selectedImageBlockId === block.id;
-                  const widthPct = block.imageWidth || 75;
-
-                  return (
-                    <div key={block.id} className="my-1.5">
-                      {/* 当两张图片紧挨时，鼠标悬停在缝隙可一键插入文字行 */}
-                      {showInsertLineAbove && (
-                        <div className="group/ins h-2 flex items-center justify-center my-0.5">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              insertTextLineAtBlockIndex(bIdx);
-                            }}
-                            className="opacity-0 group-hover/ins:opacity-100 text-[10px] text-blue-400 bg-blue-950/60 border border-blue-500/40 px-2 py-0.2 rounded-full transition-opacity"
-                          >
-                            + 在此插入文字行
-                          </button>
-                        </div>
-                      )}
-
-                      <div
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setSelectedImageBlockId(block.id);
-                        }}
-                        className={`bg-[#14171f] border rounded-xl overflow-hidden transition-all ${
-                          isImgSelected
-                            ? 'border-blue-400 ring-2 ring-blue-500/30 shadow-lg'
-                            : 'border-gray-800/90 hover:border-gray-700'
-                        }`}
-                      >
-                        {/* 图片块顶部控制长条（收起后仅保留此长条，且完整保留复制/剪切/删除按钮） */}
-                        <div className="px-3 py-1.5 bg-[#1b1f2a] flex items-center justify-between flex-wrap gap-2 text-xs">
-                          <div className="flex items-center gap-2 min-w-0 flex-1">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setCodePages((prev) =>
-                                  prev.map((p, idx) =>
-                                    idx === activeTabIdx
-                                      ? {
-                                          ...p,
-                                          blocks: (p.blocks || []).map((b) =>
-                                            b.id === block.id ? { ...b, collapsed: !b.collapsed } : b
-                                          )
-                                        }
-                                      : p
-                                  )
-                                );
-                              }}
-                              className="flex items-center gap-1 text-xs font-medium text-emerald-300 hover:text-white bg-emerald-600/20 px-2 py-0.5 rounded-md transition-colors shrink-0"
-                              title={block.collapsed ? '点击展开图片' : '点击收起图片为长条'}
-                            >
-                              {block.collapsed ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
-                              <span>{block.collapsed ? '展开' : '收起'}</span>
-                            </button>
-
-                            <ImageIcon size={13} className="text-emerald-400 shrink-0" />
-
-                            <input
-                              type="text"
-                              readOnly={!canEditActiveNote}
-                              value={block.title || ''}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                updateCurrentPage((p) => ({
-                                  ...p,
-                                  blocks: (p.blocks || []).map((b) =>
-                                    b.id === block.id ? { ...b, title: val } : b
-                                  )
-                                }));
-                              }}
-                              placeholder="图片名称..."
-                              className="bg-[#111318] border border-gray-700/80 rounded px-2 py-0.5 text-xs text-gray-200 focus:outline-none focus:border-blue-500 w-36 truncate"
-                            />
-
-                            {block.collapsed ? (
-                              <span className="text-[11px] text-gray-500 truncate">
-                                (已收起图片 · 可直接复制/剪切)
-                              </span>
-                            ) : (
-                              canEditActiveNote && (
-                                <div className="flex items-center gap-1 ml-1">
-                                  {[25, 50, 75, 100].map((w) => (
-                                    <button
-                                      key={w}
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        updateCurrentPage((p) => ({
-                                          ...p,
-                                          blocks: (p.blocks || []).map((b) =>
-                                            b.id === block.id ? { ...b, imageWidth: w } : b
-                                          )
-                                        }));
-                                      }}
-                                      className={`px-1.5 py-0.5 rounded text-[10px] ${
-                                        widthPct === w
-                                          ? 'bg-blue-600 text-white'
-                                          : 'bg-[#222631] text-gray-400 hover:text-gray-200'
-                                      }`}
-                                    >
-                                      {w}%
-                                    </button>
-                                  ))}
-                                </div>
-                              )
-                            )}
-                          </div>
-
-                          {/* 右侧操作按钮：无论展开还是收起状态，均常驻保留复制/剪切/删除 */}
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleCopyImageBlock(block);
-                              }}
-                              className="flex items-center gap-1 px-2 py-1 rounded bg-[#252830] hover:bg-gray-700 text-gray-200 border border-gray-700"
-                              title="复制图片 (选中按 Ctrl+C)"
-                            >
-                              {copiedKey === `img_copy_${block.id}` ? (
-                                <Check size={12} className="text-green-400" />
-                              ) : (
-                                <Copy size={12} />
-                              )}
-                              <span>{copiedKey === `img_copy_${block.id}` ? '已复制' : '复制图片'}</span>
-                            </button>
-
-                            {canEditActiveNote && (
-                              <>
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleCutImageBlock(block);
-                                  }}
-                                  className="flex items-center gap-1 px-2 py-1 rounded bg-[#252830] hover:bg-gray-700 text-yellow-300 border border-gray-700"
-                                  title="剪切图片 (选中按 Ctrl+X)"
-                                >
-                                  <Scissors size={12} />
-                                  <span>剪切</span>
-                                </button>
-
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleRemoveSubBlock(block.id);
-                                  }}
-                                  className="p-1 text-gray-500 hover:text-red-400"
-                                  title="删除图片"
-                                >
-                                  <Trash2 size={14} />
-                                </button>
-                              </>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* 展开状态下显示图片内容 */}
-                        {!block.collapsed && (
-                          <div className="flex justify-center bg-[#0e1015] p-2.5 border-t border-gray-800/80 overflow-hidden">
-                            <img
-                              src={block.imageUrl}
-                              alt={block.title || '笔记图片'}
-                              style={{ width: `${widthPct}%` }}
-                              className="max-w-full h-auto rounded object-contain select-all"
-                            />
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                }
-
-                // 3. 可展开/收起的内嵌代码块窗口
-                const codeLineCount = Math.max(1, block.content.split('\n').length);
-                const firstLinePreview =
-                  block.content.split('\n').find((l) => l.trim().length > 0) || '空代码块';
-
-                return (
-                  <div key={block.id} className="my-2">
-                    {showInsertLineAbove && (
-                      <div className="group/ins h-2 flex items-center justify-center my-0.5">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            insertTextLineAtBlockIndex(bIdx);
-                          }}
-                          className="opacity-0 group-hover/ins:opacity-100 text-[10px] text-blue-400 bg-blue-950/60 border border-blue-500/40 px-2 py-0.2 rounded-full transition-opacity"
-                        >
-                          + 在此插入文字行
-                        </button>
-                      </div>
-                    )}
-
-                    <div className="bg-[#13151b] border border-indigo-500/40 rounded-xl overflow-hidden shadow-lg">
-                      <div className="px-3.5 py-2 bg-[#1c2029] border-b border-gray-800 flex items-center justify-between flex-wrap gap-2">
-                        <div className="flex items-center gap-2 flex-1 min-w-0">
-                          <button
-                            onClick={() =>
-                              setCodePages((prev) =>
-                                prev.map((p, idx) =>
-                                  idx === activeTabIdx
-                                    ? {
-                                        ...p,
-                                        blocks: (p.blocks || []).map((b) =>
-                                          b.id === block.id ? { ...b, collapsed: !b.collapsed } : b
-                                        )
-                                      }
-                                    : p
-                                )
-                              )
-                            }
-                            className="flex items-center gap-1 text-xs font-medium text-indigo-300 hover:text-white bg-indigo-600/20 px-2 py-1 rounded-md transition-colors shrink-0"
-                          >
-                            {block.collapsed ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
-                            <span>{block.collapsed ? '展开' : '收起'}</span>
-                          </button>
-
-                          <input
-                            type="text"
-                            readOnly={!canEditActiveNote}
-                            value={block.title || ''}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              updateCurrentPage((p) => ({
-                                ...p,
-                                blocks: (p.blocks || []).map((b) =>
-                                  b.id === block.id ? { ...b, title: val } : b
-                                )
-                              }));
-                            }}
-                            placeholder="代码块说明..."
-                            className="bg-[#111318] border border-gray-700 rounded px-2 py-0.5 text-xs text-gray-200 focus:outline-none focus:border-indigo-500 w-36 shrink-0"
-                          />
-
-                          <select
-                            disabled={!canEditActiveNote}
-                            value={block.language || 'python'}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              updateCurrentPage((p) => ({
-                                ...p,
-                                blocks: (p.blocks || []).map((b) =>
-                                  b.id === block.id ? { ...b, language: val } : b
-                                )
-                              }));
-                            }}
-                            className="bg-[#111318] border border-gray-700 rounded px-2 py-0.5 text-[11px] text-blue-300 focus:outline-none shrink-0"
-                          >
-                            <option value="python">Python</option>
-                            <option value="typescript">TypeScript / JS</option>
-                            <option value="sql">SQL</option>
-                            <option value="bash">Bash / Shell</option>
-                            <option value="json">JSON</option>
-                          </select>
-
-                          {block.collapsed && (
-                            <span className="text-[11px] text-gray-500 font-mono truncate ml-2">
-                              ({codeLineCount} 行) {firstLinePreview}
-                            </span>
-                          )}
-                        </div>
-
-                        <div className="flex items-center gap-2 shrink-0">
-                          <button
-                            onClick={handleToggleWordWrap}
-                            className={`flex items-center gap-1 text-[11px] px-2 py-1 rounded border transition-colors ${
-                              wordWrap
-                                ? 'bg-blue-600/25 border-blue-500/50 text-blue-300'
-                                : 'bg-[#252830] border-gray-700 text-gray-400 hover:text-gray-200'
-                            }`}
-                            title="切换自动换行"
-                          >
-                            <WrapText size={12} />
-                            <span>换行</span>
-                          </button>
-
-                          <button
-                            onClick={() => copyText(block.content, `inline_${block.id}`)}
-                            className="flex items-center gap-1 text-xs bg-[#252830] hover:bg-gray-700 text-gray-200 px-2.5 py-1 rounded-md border border-gray-700 transition-colors"
-                          >
-                            {copiedKey === `inline_${block.id}` ? (
-                              <Check size={12} className="text-green-400" />
-                            ) : (
-                              <Copy size={12} />
-                            )}
-                            <span>{copiedKey === `inline_${block.id}` ? '已复制' : '复制代码'}</span>
-                          </button>
-
-                          {canEditActiveNote && (
-                            <button
-                              onClick={() => handleRemoveSubBlock(block.id)}
-                              className="p-1 text-gray-500 hover:text-red-400 transition-colors"
-                              title="删除此代码块窗口"
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          )}
-                        </div>
-                      </div>
-
-                      {!block.collapsed && (
-                        <div className="p-2 bg-[#111318]">
-                          <SyntaxHighlightEditor
-                            value={block.content}
-                            readOnly={!canEditActiveNote}
-                            wordWrap={wordWrap}
-                            onChange={(val) =>
-                              updateCurrentPage((p) => ({
-                                ...p,
-                                blocks: (p.blocks || []).map((b) =>
-                                  b.id === block.id ? { ...b, content: val } : b
-                                )
-                              }))
-                            }
-                            placeholder="# 在此输入代码块内容..."
-                            autoHeight
-                          />
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+            <RichTextNoteEditor
+              key={`${activeNoteId || 'draft'}_${currentPage.id}`}
+              content={
+                typeof currentPage.richContent === 'string'
+                  ? currentPage.richContent
+                  : blocksToRichHtml(currentPage.blocks || [])
+              }
+              editable={canEditActiveNote}
+              onChange={(html) => updateCurrentPage((p) => ({ ...p, richContent: html }))}
+              onNotify={(msg) => showToast(msg)}
+            />
           )}
         </div>
       </div>
@@ -2114,9 +1407,7 @@ export default function Notes() {
 
             {activeNoteId && canEditActiveNote && (
               <div className="space-y-2 mb-5">
-                <div className="text-xs text-gray-400 mb-1">
-                  请选择导入方式（针对代码与 Markdown 文件）：
-                </div>
+                <div className="text-xs text-gray-400 mb-1">请选择导入方式（针对代码与 Markdown 文件）：</div>
                 <label className="flex items-center gap-2 p-2.5 rounded-xl border border-gray-700 bg-[#1a1c23] cursor-pointer text-xs">
                   <input
                     type="radio"
@@ -2131,7 +1422,9 @@ export default function Notes() {
                   <input
                     type="radio"
                     checked={importModal.targetMode === 'new_note'}
-                    onChange={() => setImportModal((prev) => ({ ...prev, targetMode: 'new_note' }))}
+                    onChange={() =>
+                      setImportModal((prev) => ({ ...prev, targetMode: 'new_note' }))
+                    }
                   />
                   <span>创建为一篇全新的独立笔记</span>
                 </label>

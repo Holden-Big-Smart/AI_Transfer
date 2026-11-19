@@ -13,7 +13,7 @@ export interface NoteSubBlock {
   imageWidth?: number; // 百分比宽度：25 | 50 | 75 | 100
 }
 
-// 统一页面结构：可以是笔记页 ('note') 或代码页 ('code')
+// 统一页面结构：可以是笔记页 ('note'，使用 richContent 富文本 HTML) 或代码页 ('code')
 export interface CodePage {
   id: string;
   title: string;
@@ -21,6 +21,7 @@ export interface CodePage {
   language: string;
   code: string;
   blocks: NoteSubBlock[];
+  richContent?: string;
 }
 
 export interface NoteFolder {

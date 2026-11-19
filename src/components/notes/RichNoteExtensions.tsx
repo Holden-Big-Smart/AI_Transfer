@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 // src/components/notes/RichNoteExtensions.tsx
 import { useState, useEffect, useRef } from 'react';
 import { Node, mergeAttributes } from '@tiptap/core';

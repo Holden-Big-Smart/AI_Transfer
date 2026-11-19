@@ -409,3 +409,250 @@ html, body, #root {
 [data-theme="eyecare"] .bg-red-950\/30 {
   background-color: rgba(220, 38, 38, 0.12);
 }
+
+/* ============================================================================
+   4. TipTap 富文本编辑器与 4 级重要度多级待办样式（适配暗色 / 亮色 / 护眼）
+   ============================================================================ */
+.tiptap-editor {
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  line-height: 1.75;
+}
+
+.tiptap-editor p {
+  margin: 0.35rem 0;
+}
+
+.tiptap-editor h1 {
+  font-size: 1.55rem;
+  font-weight: 700;
+  line-height: 1.35;
+  margin: 1rem 0 0.5rem;
+  color: var(--text-primary);
+}
+
+.tiptap-editor h2 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1.4;
+  margin: 0.85rem 0 0.45rem;
+  color: var(--text-primary);
+}
+
+.tiptap-editor h3 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  line-height: 1.45;
+  margin: 0.7rem 0 0.35rem;
+  color: var(--text-primary);
+}
+
+.tiptap-editor ul:not([data-type="taskList"]) {
+  list-style-type: disc;
+  padding-left: 1.5rem;
+  margin: 0.4rem 0;
+}
+
+.tiptap-editor ol {
+  list-style-type: decimal;
+  padding-left: 1.5rem;
+  margin: 0.4rem 0;
+}
+
+.tiptap-editor blockquote {
+  border-left: 3px solid #3b82f6;
+  padding: 0.35rem 0.9rem;
+  margin: 0.65rem 0;
+  background-color: var(--bg-panel);
+  border-radius: 0 0.5rem 0.5rem 0;
+  color: var(--text-muted);
+}
+
+.tiptap-editor hr {
+  border: none;
+  border-top: 1px solid var(--border-main);
+  margin: 1rem 0;
+}
+
+.tiptap-editor code {
+  background-color: var(--bg-code-gutter);
+  color: var(--tok-kw);
+  padding: 0.12rem 0.35rem;
+  border-radius: 0.3rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.82em;
+}
+
+.tiptap-editor p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  color: var(--code-placeholder);
+  pointer-events: none;
+  height: 0;
+}
+
+/* 富文本表格样式 */
+.tiptap-editor table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.75rem 0;
+  table-layout: fixed;
+  overflow: hidden;
+  border-radius: 0.5rem;
+}
+
+.tiptap-editor th,
+.tiptap-editor td {
+  border: 1px solid var(--border-main);
+  padding: 0.45rem 0.65rem;
+  vertical-align: top;
+  min-width: 60px;
+}
+
+.tiptap-editor th {
+  background-color: var(--bg-panel);
+  font-weight: 600;
+  text-align: left;
+}
+
+.tiptap-editor .selectedCell {
+  background-color: rgba(59, 130, 246, 0.16);
+}
+
+/* 多级待办列表布局 */
+.tiptap-editor ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0;
+  margin: 0.35rem 0;
+}
+
+/* 嵌套子待办自动缩进并带左侧结构引导线 */
+.tiptap-editor ul[data-type="taskList"] ul[data-type="taskList"] {
+  padding-left: 1.5rem;
+  margin-top: 0.25rem;
+  margin-bottom: 0.15rem;
+  border-left: 1px dashed var(--border-main);
+  margin-left: 0.45rem;
+}
+
+.tiptap-editor li[data-type="taskItem"] .task-item-content > p,
+.tiptap-editor li[data-type="taskItem"] .task-item-content > [data-node-view-content-react] > p {
+  margin: 0.1rem 0;
+}
+
+/* 核心隔离规则：勾选父待办时仅划掉当前行本身文本，绝不误划嵌套子待办 */
+.tiptap-editor li[data-type="taskItem"][data-checked="true"] > .task-item-row > .task-item-body > .task-item-content > p,
+.tiptap-editor li[data-type="taskItem"][data-checked="true"] > .task-item-row > .task-item-body > .task-item-content > [data-node-view-content-react] > p {
+  text-decoration: line-through;
+  opacity: 0.52;
+}
+
+/* 待办勾选方框 */
+.todo-checkbox {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  border: 1.5px solid #6b7280;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background-color: transparent;
+  color: #ffffff;
+  transition: all 0.15s ease;
+}
+
+.todo-check-high { border-color: #ef4444; }
+.todo-check-medium { border-color: #f59e0b; }
+.todo-check-normal { border-color: #3b82f6; }
+.todo-check-low { border-color: #9ca3af; }
+
+.todo-checkbox.is-checked.todo-check-high { background-color: #ef4444; border-color: #ef4444; }
+.todo-checkbox.is-checked.todo-check-medium { background-color: #f59e0b; border-color: #f59e0b; }
+.todo-checkbox.is-checked.todo-check-normal { background-color: #3b82f6; border-color: #3b82f6; }
+.todo-checkbox.is-checked.todo-check-low { background-color: #6b7280; border-color: #6b7280; }
+
+/* 4 级重要度徽章（暗色模式） */
+.todo-prio-badge {
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 9999px;
+  font-weight: 600;
+  border: 1px solid transparent;
+  transition: all 0.15s ease;
+}
+
+.todo-prio-high {
+  background-color: rgba(239, 68, 68, 0.18);
+  color: #f87171;
+  border-color: rgba(239, 68, 68, 0.45);
+}
+
+.todo-prio-medium {
+  background-color: rgba(245, 158, 11, 0.18);
+  color: #fbbf24;
+  border-color: rgba(245, 158, 11, 0.45);
+}
+
+.todo-prio-normal {
+  background-color: rgba(59, 130, 246, 0.16);
+  color: #60a5fa;
+  border-color: rgba(59, 130, 246, 0.4);
+}
+
+.todo-prio-low {
+  background-color: rgba(156, 163, 175, 0.16);
+  color: #9ca3af;
+  border-color: rgba(156, 163, 175, 0.35);
+}
+
+/* 4 级重要度徽章（亮色 & 护眼模式高对比度适配） */
+[data-theme="light"] .todo-prio-high,
+[data-theme="eyecare"] .todo-prio-high {
+  background-color: rgba(220, 38, 38, 0.12);
+  color: #b91c1c;
+  border-color: rgba(220, 38, 38, 0.35);
+}
+
+[data-theme="light"] .todo-prio-medium,
+[data-theme="eyecare"] .todo-prio-medium {
+  background-color: rgba(217, 119, 6, 0.14);
+  color: #b45309;
+  border-color: rgba(217, 119, 6, 0.38);
+}
+
+[data-theme="light"] .todo-prio-normal,
+[data-theme="eyecare"] .todo-prio-normal {
+  background-color: rgba(37, 99, 235, 0.12);
+  color: #1d4ed8;
+  border-color: rgba(37, 99, 235, 0.35);
+}
+
+[data-theme="light"] .todo-prio-low,
+[data-theme="eyecare"] .todo-prio-low {
+  background-color: rgba(107, 114, 128, 0.14);
+  color: #4b5563;
+  border-color: rgba(107, 114, 128, 0.35);
+}
+
+/* 富文本工具栏三主题原生变量绑定 */
+.rich-editor-toolbar {
+  background-color: var(--bg-panel);
+  border-color: var(--border-subtle);
+}
+
+/* 兜底补充带透明度后缀的暗色类名在亮色 / 护眼模式下的适配 */
+[data-theme="light"] .bg-\[\#1c2029\]\/95,
+[data-theme="eyecare"] .bg-\[\#1c2029\]\/95 {
+  background-color: var(--bg-panel);
+}
+
+[data-theme="light"] .bg-gray-700\/80,
+[data-theme="eyecare"] .bg-gray-700\/80 {
+  background-color: var(--border-main);
+}
+
+[data-theme="light"] .bg-green-950\/50,
+[data-theme="eyecare"] .bg-green-950\/50 {
+  background-color: rgba(22, 163, 74, 0.14);
+}

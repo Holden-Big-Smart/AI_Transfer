@@ -110,8 +110,8 @@ export default function FileCenter() {
   // 登录用户变化或文件列表增删时，自动刷新存储空间统计
   useEffect(() => {
     if (!currentUser) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadStorageStats();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser, files.length]);
 
   // 移动端折叠“存储与上传面板”开关
@@ -249,6 +249,7 @@ export default function FileCenter() {
   };
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSelectedFileIds([]);
     if (!currentUser) return;
 

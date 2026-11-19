@@ -1,14 +1,111 @@
 // src/store/useNoteStore.ts
 import { create } from 'zustand';
 import { api } from '../utils/api';
-import type { CodePage, NoteFolder, NoteItem, NoteSubBlock } from '../types/note';
 
-export type { CodePage, NoteFolder, NoteItem, NoteSubBlock };
+// 旧版笔记子块结构（保留以兼容存量笔记和旧备份包无损迁移）
+export interface NoteSubBlock {
+  id: string;
+  type: 'text' | 'code' | 'image';
+  content: string;
+  language: string;
+  collapsed: boolean;
+  title: string;
+  imageUrl?: string;
+  imageWidth?: number;
+}
+
+// 统一页面结构：笔记页 ('note'，使用 richContent 富文本 HTML) 或代码页 ('code')
+export interface CodePage {
+  id: string;
+  title: string;
+  pageType: 'note' | 'code';
+  language: string;
+  code: string;
+  blocks: NoteSubBlock[];
+  richContent?: string;
+}
+
+export interface NoteFolder {
+  id: string;
+  name: string;
+  created_at: string;
+}
+
+export interface NoteItem {
+  id: string;
+  folderId: string | null;
+  title: string;
+  content: string;
+  codePages: CodePage[];
+  isPublic?: boolean;
+  isOwner?: boolean;
+  authorName?: string;
+  updatedAt: string;
+  version?: string;
+}
 
 export function formatDefaultNoteTitle(): string {
   const now = new Date();
   const pad = (n: number) => String(n).padStart(2, '0');
   return `Note_${now.getFullYear()}年${pad(now.getMonth() + 1)}月${pad(now.getDate())}日_${pad(now.getHours())}点${pad(now.getMinutes())}分${pad(now.getSeconds())}秒`;
+}
+
+function escapeHtmlText(str: string): string {
+  return (str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function escapeHtmlAttr(str: string): string {
+  return (str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\n/g, '&#10;');
+}
+
+function formatLegacyInline(text: string): string {
+  let html = escapeHtmlText(text);
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  return html;
+}
+
+// 将旧版 blocks 数组（文本/折叠代码窗/图片）无损转换为新版 TipTap 富文本 HTML
+export function blocksToRichHtml(blocks: NoteSubBlock[]): string {
+  if (!Array.isArray(blocks) || blocks.length === 0) return '<p></p>';
+  const parts: string[] = [];
+
+  for (const blk of blocks) {
+    if (blk.type === 'code') {
+      parts.push(
+        `<div data-type="collapsible-code-block" data-code="${escapeHtmlAttr(blk.content || '')}" data-language="${escapeHtmlAttr(blk.language || 'python')}" data-title="${escapeHtmlAttr(blk.title || '代码片段.py')}" data-collapsed="${String(Boolean(blk.collapsed))}"></div>`
+      );
+    } else if (blk.type === 'image' && blk.imageUrl) {
+      parts.push(
+        `<div data-type="collapsible-image-block" data-src="${escapeHtmlAttr(blk.imageUrl)}" data-title="${escapeHtmlAttr(blk.title || 'image.png')}" data-width="${Number(blk.imageWidth) || 75}" data-collapsed="${String(Boolean(blk.collapsed))}"></div>`
+      );
+    } else if (blk.type === 'text') {
+      const content = blk.content || '';
+      if (!content) continue;
+      const lines = content.split('\n');
+      for (const line of lines) {
+        if (line.startsWith('### ')) {
+          parts.push(`<h3>${formatLegacyInline(line.slice(4))}</h3>`);
+        } else if (line.startsWith('## ')) {
+          parts.push(`<h2>${formatLegacyInline(line.slice(3))}</h2>`);
+        } else if (line.startsWith('# ')) {
+          parts.push(`<h1>${formatLegacyInline(line.slice(2))}</h1>`);
+        } else {
+          parts.push(`<p>${formatLegacyInline(line)}</p>`);
+        }
+      }
+    }
+  }
+
+  return parts.length > 0 ? parts.join('') : '<p></p>';
 }
 
 function parseLegacyTextToBlocks(rawText: string): NoteSubBlock[] {
@@ -53,13 +150,15 @@ export function normalizeNoteItem(raw: any): NoteItem {
 
   const hasNotePageAlready = rawPages.some((p) => p.pageType === 'note');
   if (raw.content && raw.content.trim() && !hasNotePageAlready) {
+    const legacyBlocks = parseLegacyTextToBlocks(raw.content);
     normalizedPages.push({
       id: `np_legacy_${raw.id}`,
       title: '笔记正文',
       pageType: 'note',
       language: 'markdown',
       code: '',
-      blocks: parseLegacyTextToBlocks(raw.content)
+      blocks: legacyBlocks,
+      richContent: blocksToRichHtml(legacyBlocks)
     });
   }
 
@@ -73,13 +172,22 @@ export function normalizeNoteItem(raw: any): NoteItem {
           : parseLegacyTextToBlocks(p.code || '')
         : [];
 
+    // 若已存在 richContent 字段则直接使用，否则从旧版 blocks 自动无损转换
+    const richContent =
+      pType === 'note'
+        ? typeof p.richContent === 'string'
+          ? p.richContent
+          : blocksToRichHtml(blocks)
+        : undefined;
+
     normalizedPages.push({
       id: p.id || `pg_${Date.now()}_${idx}`,
       title: p.title || (pType === 'note' ? `笔记_${idx + 1}` : `片段_${idx + 1}.py`),
       pageType: pType,
       language: p.language || 'python',
       code: p.code || '',
-      blocks
+      blocks,
+      richContent
     });
   }
 
@@ -90,7 +198,8 @@ export function normalizeNoteItem(raw: any): NoteItem {
       pageType: 'note',
       language: 'python',
       code: '',
-      blocks: [{ id: `blk_init_${Date.now()}`, type: 'text', content: '', language: 'python', collapsed: false, title: '' }]
+      blocks: [],
+      richContent: '<p></p>'
     });
   }
 
@@ -255,36 +364,6 @@ export const useNoteStore = create<NoteStore>((set, get) => ({
     });
   },
 
-  saveNoteFromAI: async (title, textContent, codeSnippets = []) => {
-    const pages: CodePage[] = [];
-    if (textContent.trim()) {
-      pages.push({
-        id: `np_ai_${Date.now()}`,
-        title: 'AI说明笔记',
-        pageType: 'note',
-        language: 'python',
-        code: '',
-        blocks: [{ id: `blk_${Date.now()}`, type: 'text', content: textContent, language: 'python', collapsed: false, title: '' }]
-      });
-    }
-    codeSnippets.forEach((code, idx) => {
-      pages.push({
-        id: `cp_ai_${Date.now()}_${idx}`,
-        title: `AI代码_${idx + 1}.py`,
-        pageType: 'code',
-        language: 'python',
-        code,
-        blocks: []
-      });
-    });
-    return get().saveNote({
-      folderId: null,
-      title: title || formatDefaultNoteTitle(),
-      codePages: pages
-    });
-  },
-
-  // 批量导入还原 .note.json 备份数据
   importNotesBackup: async (backupData) => {
     const state = get();
     const folderNameMap = new Map<string, string>();
@@ -320,5 +399,36 @@ export const useNoteStore = create<NoteStore>((set, get) => ({
 
     await get().loadNotesData();
     return importedCount;
+  },
+
+  saveNoteFromAI: async (title, textContent, codeSnippets = []) => {
+    const pages: CodePage[] = [];
+    if (textContent.trim()) {
+      const blocks = parseLegacyTextToBlocks(textContent);
+      pages.push({
+        id: `np_ai_${Date.now()}`,
+        title: 'AI说明笔记',
+        pageType: 'note',
+        language: 'python',
+        code: '',
+        blocks,
+        richContent: blocksToRichHtml(blocks)
+      });
+    }
+    codeSnippets.forEach((code, idx) => {
+      pages.push({
+        id: `cp_ai_${Date.now()}_${idx}`,
+        title: `AI代码_${idx + 1}.py`,
+        pageType: 'code',
+        language: 'python',
+        code,
+        blocks: []
+      });
+    });
+    return get().saveNote({
+      folderId: null,
+      title: title || formatDefaultNoteTitle(),
+      codePages: pages
+    });
   }
 }));
