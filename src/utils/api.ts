@@ -59,6 +59,13 @@ export const api = {
         body: JSON.stringify({ new_password })
       }).then(handleResponse<{ message: string }>),
 
+    updateTheme: (theme: 'dark' | 'light' | 'eyecare') =>
+      fetch(`${API_BASE_URL}/api/auth/theme`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ theme })
+      }).then(handleResponse<{ message: string; theme: 'dark' | 'light' | 'eyecare' }>),
+
     getUsers: () =>
       fetch(`${API_BASE_URL}/api/auth/users`, {
         headers: getAuthHeaders()
@@ -80,6 +87,19 @@ export const api = {
 
   // === 文件与目录操作接口 ===
   files: {
+    // 获取真实存储空间统计（区分文件占用与笔记占用）
+    getStorageStats: () =>
+      fetch(`${API_BASE_URL}/api/files/storage-stats`, {
+        headers: getAuthHeaders()
+      }).then(
+        handleResponse<{
+          filesBytes: number;
+          notesBytes: number;
+          usedBytes: number;
+          totalQuotaBytes: number;
+        }>
+      ),
+
     list: (is_public: boolean, sub_path: string = '') => {
       const params = new URLSearchParams({ is_public: String(is_public), sub_path });
       return fetch(`${API_BASE_URL}/api/files/list?${params.toString()}`, {

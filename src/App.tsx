@@ -1,23 +1,49 @@
 // src/App.tsx
 import { useState, useEffect } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import Sidebar from './components/layout/Sidebar';
 import FileCenter from './pages/FileCenter';
 import AICopilot from './pages/AICopilot';
 import Notes from './pages/Notes';
 import UserManagement from './pages/UserManagement';
 import Login from './pages/Login';
-import { useAuthStore } from './store/useAuthStore';
+import { useAuthStore, applyThemeToDom } from './store/useAuthStore';
+import { resolveDocumentTitle } from './config/siteConfig';
 import { KeyRound, X, AlertCircle } from 'lucide-react';
 
+// 路由标题动态同步组件（根据 siteConfig.ts 自动更新浏览器标签名为 DCM-用途）
+function RouteTitleSync() {
+  const location = useLocation();
+  useEffect(() => {
+    document.title = resolveDocumentTitle(location.pathname, true);
+  }, [location.pathname]);
+  return null;
+}
+
 function App() {
-  const { currentUser, changePassword } = useAuthStore();
+  const { currentUser, theme, changePassword, syncCurrentUser } = useAuthStore();
 
   const [isPwdModalOpen, setIsPwdModalOpen] = useState(false);
   const [newPwd, setNewPwd] = useState('');
   const [confirmPwd, setConfirmPwd] = useState('');
   const [pwdError, setPwdError] = useState('');
   const [isBannerIgnored, setIsBannerIgnored] = useState(false);
+
+  // 确保 DOM 主题属性与 store 始终一致
+  useEffect(() => {
+    applyThemeToDom(theme);
+  }, [theme]);
+
+  // 登录后拉取一次最新用户信息，确保跨端主题设置同步
+  useEffect(() => {
+    if (currentUser && currentUser.role !== 'guest') {
+      syncCurrentUser();
+    }
+    if (!currentUser) {
+      document.title = resolveDocumentTitle('/login', false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id]);
 
   // 监听侧边栏派发的修改密码事件
   useEffect(() => {
@@ -53,6 +79,7 @@ function App() {
 
   return (
     <Router>
+      <RouteTitleSync />
       <div className="flex h-screen w-full font-sans text-gray-200 bg-[#1e2128] overflow-hidden relative">
         <Sidebar />
 

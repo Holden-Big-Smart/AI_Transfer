@@ -5,51 +5,407 @@
   /* 预留扩展 */
 }
 
-/* 声明全局深色配色方案，让浏览器原生控件（含默认滚动条、下拉框）自动切换为深色 */
-:root {
+/* ============================================================================
+   1. 三套全局主题变量定义（暗色默认 / 亮色 / 护眼）
+   ============================================================================ */
+:root,
+[data-theme="dark"] {
   color-scheme: dark;
+  --bg-base: #1e2128;
+  --bg-surface: #2a2d35;
+  --bg-surface-alt: #252830;
+  --bg-sidebar: #16181d;
+  --bg-panel: #191b22;
+  --bg-input: #1a1c23;
+  --bg-hover: #323640;
+  --bg-hover-strong: #374151;
+  --bg-code: #111318;
+  --bg-code-gutter: #151820;
+  --text-primary: #f3f4f6;
+  --text-secondary: #d1d5db;
+  --text-muted: #9ca3af;
+  --text-subtle: #6b7280;
+  --border-main: #374151;
+  --border-subtle: #1f2937;
+  --scrollbar-thumb: rgba(75, 85, 99, 0.45);
+  --scrollbar-hover: rgba(156, 163, 175, 0.75);
+  --chart-free: #374151;
+
+  /* 暗色代码语法高亮变量 */
+  --code-text: #e5e7eb;
+  --code-caret: #ffffff;
+  --code-placeholder: #4b5563;
+  --tok-str: #fcd34d;
+  --tok-comment: rgba(52, 211, 153, 0.85);
+  --tok-decorator: #facc15;
+  --tok-kw: #c084fc;
+  --tok-builtin: #22d3ee;
+  --tok-func: #60a5fa;
+  --tok-num: #fb923c;
 }
 
+[data-theme="light"] {
+  color-scheme: light;
+  --bg-base: #f3f4f6;
+  --bg-surface: #ffffff;
+  --bg-surface-alt: #ffffff;
+  --bg-sidebar: #ffffff;
+  --bg-panel: #f8fafc;
+  --bg-input: #f9fafb;
+  --bg-hover: #e5e7eb;
+  --bg-hover-strong: #d1d5db;
+  --bg-code: #f8fafc;
+  --bg-code-gutter: #eef2f6;
+  --text-primary: #111827;
+  --text-secondary: #1f2937;
+  --text-muted: #4b5563;
+  --text-subtle: #6b7280;
+  --border-main: #d1d5db;
+  --border-subtle: #e5e7eb;
+  --scrollbar-thumb: rgba(156, 163, 175, 0.55);
+  --scrollbar-hover: rgba(107, 114, 128, 0.85);
+  --chart-free: #e5e7eb;
+
+  /* 亮色代码语法高亮变量（GitHub Light 风格高对比配色） */
+  --code-text: #1f2937;
+  --code-caret: #111827;
+  --code-placeholder: #9ca3af;
+  --tok-str: #b45309;
+  --tok-comment: #15803d;
+  --tok-decorator: #a16207;
+  --tok-kw: #7c3aed;
+  --tok-builtin: #0e7490;
+  --tok-func: #1d4ed8;
+  --tok-num: #c2410c;
+}
+
+[data-theme="eyecare"] {
+  color-scheme: light;
+  --bg-base: #ede7d9;
+  --bg-surface: #f7f3e8;
+  --bg-surface-alt: #f5f0e3;
+  --bg-sidebar: #e6dfd0;
+  --bg-panel: #efe9dc;
+  --bg-input: #faf7ef;
+  --bg-hover: #dfd7c5;
+  --bg-hover-strong: #d3c9b4;
+  --bg-code: #f4efe2;
+  --bg-code-gutter: #eae3d2;
+  --text-primary: #2c2820;
+  --text-secondary: #3f3a30;
+  --text-muted: #655e50;
+  --text-subtle: #7e7666;
+  --border-main: #cfc6b2;
+  --border-subtle: #dcd4c2;
+  --scrollbar-thumb: rgba(139, 128, 108, 0.45);
+  --scrollbar-hover: rgba(105, 96, 80, 0.75);
+  --chart-free: #dcd4c2;
+
+  /* 护眼代码语法高亮变量（暖调 Solarized / 柔墨配色） */
+  --code-text: #2c2820;
+  --code-caret: #2c2820;
+  --code-placeholder: #8c8372;
+  --tok-str: #9a3412;
+  --tok-comment: #3f6212;
+  --tok-decorator: #854d0e;
+  --tok-kw: #6d28d9;
+  --tok-builtin: #0f766e;
+  --tok-func: #0369a1;
+  --tok-num: #b45309;
+}
+
+/* ============================================================================
+   2. 基础布局与自定义滚动条
+   ============================================================================ */
 html, body, #root {
   height: 100%;
   margin: 0;
   padding: 0;
-  background-color: #1e2128;
+  background-color: var(--bg-base);
+  color: var(--text-secondary);
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
-/* 全局自定义极简深色滚动条 */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #374151 transparent;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
 *::-webkit-scrollbar {
-  width: 5px;   /* 纵向滚动条宽度 */
-  height: 4px;  /* 横向滚动条高度（极细） */
+  width: 5px;
+  height: 4px;
 }
 
 *::-webkit-scrollbar-track {
-  background: transparent; /* 轨道完全透明，融入深色背景 */
+  background: transparent;
 }
 
 *::-webkit-scrollbar-thumb {
-  background-color: rgba(75, 85, 99, 0.45); /* 半透明深灰滑块 */
+  background-color: var(--scrollbar-thumb);
   border-radius: 9999px;
 }
 
 *::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(156, 163, 175, 0.75); /* 鼠标悬停时微亮 */
+  background-color: var(--scrollbar-hover);
 }
 
 *::-webkit-scrollbar-corner {
   background: transparent;
 }
 
-/* 可选工具类：如需完全隐藏某处的滚动条，可在 className 中加入 no-scrollbar */
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }
 .no-scrollbar {
   -ms-overflow-style: none;
   scrollbar-width: none;
+}
+
+/* 代码语法高亮语义类（供 Notes 代码页与内嵌代码窗联动主题切换） */
+.code-tok-str { color: var(--tok-str); }
+.code-tok-comment { color: var(--tok-comment); font-style: italic; }
+.code-tok-decorator { color: var(--tok-decorator); }
+.code-tok-kw { color: var(--tok-kw); font-weight: 600; }
+.code-tok-builtin { color: var(--tok-builtin); }
+.code-tok-func { color: var(--tok-func); }
+.code-tok-num { color: var(--tok-num); }
+.code-editor-pre { color: var(--code-text); }
+.code-editor-placeholder { color: var(--code-placeholder); }
+.code-editor-textarea { caret-color: var(--code-caret); }
+
+/* ============================================================================
+   3. 亮色与护眼主题全局表面 / 文字 / 边框适配规则
+   ============================================================================ */
+[data-theme="light"] .bg-\[\#1e2128\],
+[data-theme="eyecare"] .bg-\[\#1e2128\],
+[data-theme="light"] .bg-\[\#1e2128\]\/60,
+[data-theme="eyecare"] .bg-\[\#1e2128\]\/60 {
+  background-color: var(--bg-base);
+}
+
+[data-theme="light"] .bg-\[\#2a2d35\],
+[data-theme="eyecare"] .bg-\[\#2a2d35\],
+[data-theme="light"] .bg-\[\#1b1e26\],
+[data-theme="eyecare"] .bg-\[\#1b1e26\] {
+  background-color: var(--bg-surface);
+}
+
+[data-theme="light"] .bg-\[\#252830\],
+[data-theme="eyecare"] .bg-\[\#252830\],
+[data-theme="light"] .bg-\[\#21242c\],
+[data-theme="eyecare"] .bg-\[\#21242c\],
+[data-theme="light"] .bg-\[\#1f232c\],
+[data-theme="eyecare"] .bg-\[\#1f232c\] {
+  background-color: var(--bg-surface-alt);
+}
+
+[data-theme="light"] .bg-\[\#16181d\],
+[data-theme="eyecare"] .bg-\[\#16181d\],
+[data-theme="light"] .bg-\[\#16181d\]\/95,
+[data-theme="eyecare"] .bg-\[\#16181d\]\/95 {
+  background-color: var(--bg-sidebar);
+}
+
+[data-theme="light"] .bg-\[\#191b22\],
+[data-theme="eyecare"] .bg-\[\#191b22\],
+[data-theme="light"] .bg-\[\#191c23\],
+[data-theme="eyecare"] .bg-\[\#191c23\],
+[data-theme="light"] .bg-\[\#1d2027\],
+[data-theme="eyecare"] .bg-\[\#1d2027\],
+[data-theme="light"] .bg-\[\#1c2029\],
+[data-theme="eyecare"] .bg-\[\#1c2029\],
+[data-theme="light"] .bg-\[\#1b1f2a\],
+[data-theme="eyecare"] .bg-\[\#1b1f2a\],
+[data-theme="light"] .bg-\[\#22252e\],
+[data-theme="eyecare"] .bg-\[\#22252e\] {
+  background-color: var(--bg-panel);
+}
+
+[data-theme="light"] .bg-\[\#1a1c23\],
+[data-theme="eyecare"] .bg-\[\#1a1c23\],
+[data-theme="light"] .bg-\[\#14161b\],
+[data-theme="eyecare"] .bg-\[\#14161b\],
+[data-theme="light"] .bg-\[\#14171f\],
+[data-theme="eyecare"] .bg-\[\#14171f\],
+[data-theme="light"] .bg-\[\#13151b\],
+[data-theme="eyecare"] .bg-\[\#13151b\],
+[data-theme="light"] .bg-\[\#121418\],
+[data-theme="eyecare"] .bg-\[\#121418\],
+[data-theme="light"] .bg-\[\#0e1015\],
+[data-theme="eyecare"] .bg-\[\#0e1015\] {
+  background-color: var(--bg-input);
+}
+
+[data-theme="light"] .bg-\[\#111318\],
+[data-theme="eyecare"] .bg-\[\#111318\] {
+  background-color: var(--bg-code);
+}
+
+[data-theme="light"] .bg-\[\#151820\],
+[data-theme="eyecare"] .bg-\[\#151820\] {
+  background-color: var(--bg-code-gutter);
+}
+
+[data-theme="light"] .bg-\[\#323640\],
+[data-theme="eyecare"] .bg-\[\#323640\],
+[data-theme="light"] .bg-\[\#262a34\],
+[data-theme="eyecare"] .bg-\[\#262a34\],
+[data-theme="light"] .bg-\[\#222631\],
+[data-theme="eyecare"] .bg-\[\#222631\],
+[data-theme="light"] .bg-gray-800,
+[data-theme="eyecare"] .bg-gray-800 {
+  background-color: var(--bg-hover);
+}
+
+[data-theme="light"] .bg-\[\#374151\],
+[data-theme="eyecare"] .bg-\[\#374151\],
+[data-theme="light"] .bg-gray-700,
+[data-theme="eyecare"] .bg-gray-700 {
+  background-color: var(--bg-hover-strong);
+}
+
+/* 交互悬停背景 */
+[data-theme="light"] .hover\:bg-\[\#323640\]:hover,
+[data-theme="eyecare"] .hover\:bg-\[\#323640\]:hover,
+[data-theme="light"] .hover\:bg-\[\#252830\]:hover,
+[data-theme="eyecare"] .hover\:bg-\[\#252830\]:hover,
+[data-theme="light"] .hover\:bg-\[\#2b2f3a\]:hover,
+[data-theme="eyecare"] .hover\:bg-\[\#2b2f3a\]:hover,
+[data-theme="light"] .hover\:bg-\[\#2b303c\]:hover,
+[data-theme="eyecare"] .hover\:bg-\[\#2b303c\]:hover,
+[data-theme="light"] .hover\:bg-\[\#3d424e\]:hover,
+[data-theme="eyecare"] .hover\:bg-\[\#3d424e\]:hover,
+[data-theme="light"] .hover\:bg-\[\#4b5563\]:hover,
+[data-theme="eyecare"] .hover\:bg-\[\#4b5563\]:hover,
+[data-theme="light"] .hover\:bg-gray-800:hover,
+[data-theme="eyecare"] .hover\:bg-gray-800:hover,
+[data-theme="light"] .hover\:bg-gray-800\/60:hover,
+[data-theme="eyecare"] .hover\:bg-gray-800\/60:hover,
+[data-theme="light"] .hover\:bg-gray-700:hover,
+[data-theme="eyecare"] .hover\:bg-gray-700:hover {
+  background-color: var(--bg-hover);
+}
+
+/* 文字颜色映射（保留按钮上的 text-white 不受影响） */
+[data-theme="light"] .text-gray-100,
+[data-theme="eyecare"] .text-gray-100,
+[data-theme="light"] .text-gray-200,
+[data-theme="eyecare"] .text-gray-200 {
+  color: var(--text-primary);
+}
+
+[data-theme="light"] .text-gray-300,
+[data-theme="eyecare"] .text-gray-300 {
+  color: var(--text-secondary);
+}
+
+[data-theme="light"] .text-gray-400,
+[data-theme="eyecare"] .text-gray-400 {
+  color: var(--text-muted);
+}
+
+[data-theme="light"] .text-gray-500,
+[data-theme="eyecare"] .text-gray-500,
+[data-theme="light"] .text-gray-600,
+[data-theme="eyecare"] .text-gray-600 {
+  color: var(--text-subtle);
+}
+
+[data-theme="light"] .hover\:text-white:hover,
+[data-theme="eyecare"] .hover\:text-white:hover,
+[data-theme="light"] .hover\:text-gray-200:hover,
+[data-theme="eyecare"] .hover\:text-gray-200:hover {
+  color: var(--text-primary);
+}
+
+/* 边框颜色映射 */
+[data-theme="light"] .border-gray-600,
+[data-theme="eyecare"] .border-gray-600,
+[data-theme="light"] .border-gray-700,
+[data-theme="eyecare"] .border-gray-700,
+[data-theme="light"] .border-gray-700\/60,
+[data-theme="eyecare"] .border-gray-700\/60,
+[data-theme="light"] .border-gray-700\/80,
+[data-theme="eyecare"] .border-gray-700\/80,
+[data-theme="light"] .border-gray-500,
+[data-theme="eyecare"] .border-gray-500 {
+  border-color: var(--border-main);
+}
+
+[data-theme="light"] .border-gray-800,
+[data-theme="eyecare"] .border-gray-800,
+[data-theme="light"] .border-gray-800\/80,
+[data-theme="eyecare"] .border-gray-800\/80,
+[data-theme="light"] .border-gray-800\/90,
+[data-theme="eyecare"] .border-gray-800\/90 {
+  border-color: var(--border-subtle);
+}
+
+/* 浅色 / 护眼模式下强调色与状态角标清晰度增强 */
+[data-theme="light"] .text-blue-400,
+[data-theme="light"] .text-blue-300,
+[data-theme="eyecare"] .text-blue-400,
+[data-theme="eyecare"] .text-blue-300 {
+  color: #1d4ed8;
+}
+
+[data-theme="light"] .text-indigo-400,
+[data-theme="light"] .text-indigo-300,
+[data-theme="eyecare"] .text-indigo-400,
+[data-theme="eyecare"] .text-indigo-300 {
+  color: #4338ca;
+}
+
+[data-theme="light"] .text-green-400,
+[data-theme="light"] .text-green-300,
+[data-theme="light"] .text-emerald-400,
+[data-theme="light"] .text-emerald-300,
+[data-theme="eyecare"] .text-green-400,
+[data-theme="eyecare"] .text-green-300,
+[data-theme="eyecare"] .text-emerald-400,
+[data-theme="eyecare"] .text-emerald-300 {
+  color: #15803d;
+}
+
+[data-theme="light"] .text-yellow-400,
+[data-theme="light"] .text-yellow-300,
+[data-theme="eyecare"] .text-yellow-400,
+[data-theme="eyecare"] .text-yellow-300 {
+  color: #b45309;
+}
+
+[data-theme="light"] .text-red-400,
+[data-theme="eyecare"] .text-red-400 {
+  color: #dc2626;
+}
+
+/* 状态徽章与高亮底色柔化 */
+[data-theme="light"] .bg-green-950\/60,
+[data-theme="light"] .bg-green-950\/70,
+[data-theme="light"] .bg-green-950\/40,
+[data-theme="light"] .bg-green-950\/30,
+[data-theme="eyecare"] .bg-green-950\/60,
+[data-theme="eyecare"] .bg-green-950\/70,
+[data-theme="eyecare"] .bg-green-950\/40,
+[data-theme="eyecare"] .bg-green-950\/30 {
+  background-color: rgba(22, 163, 74, 0.14);
+}
+
+[data-theme="light"] .bg-blue-950\/60,
+[data-theme="light"] .bg-blue-950\/30,
+[data-theme="eyecare"] .bg-blue-950\/60,
+[data-theme="eyecare"] .bg-blue-950\/30 {
+  background-color: rgba(37, 99, 235, 0.12);
+}
+
+[data-theme="light"] .bg-yellow-950\/40,
+[data-theme="eyecare"] .bg-yellow-950\/40 {
+  background-color: rgba(217, 119, 6, 0.14);
+}
+
+[data-theme="light"] .bg-red-950\/40,
+[data-theme="light"] .bg-red-950\/30,
+[data-theme="eyecare"] .bg-red-950\/40,
+[data-theme="eyecare"] .bg-red-950\/30 {
+  background-color: rgba(220, 38, 38, 0.12);
 }
