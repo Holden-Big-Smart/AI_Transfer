@@ -14,6 +14,7 @@ export interface UserAccount {
   mustChangePassword?: boolean;
   allowedProjects: string[];
   theme?: ThemeMode;
+  noteAutoSave?: boolean;
   createdAt?: string;
 }
 
@@ -21,9 +22,11 @@ interface AuthStore {
   users: UserAccount[];
   currentUser: UserAccount | null;
   theme: ThemeMode;
+  noteAutoSave: boolean;
   fetchUsers: () => Promise<void>;
   syncCurrentUser: () => Promise<void>;
   setTheme: (theme: ThemeMode) => Promise<void>;
+  setNoteAutoSave: (enabled: boolean) => Promise<void>;
   login: (username: string, password: string) => Promise<{ success: boolean; message?: string; mustChange?: boolean }>;
   logout: () => void;
   guestLogin: () => void;
@@ -59,6 +62,11 @@ const getUserThemeStorageKey = (user: UserAccount | null): string => {
   return `app_theme_${user.id}`;
 };
 
+const getUserAutoSaveStorageKey = (user: UserAccount | null): string => {
+  if (!user || user.role === 'guest') return 'app_note_autosave_guest';
+  return `app_note_autosave_${user.id}`;
+};
+
 const getStoredCurrentUser = (): UserAccount | null => {
   const token = localStorage.getItem('access_token');
   const data = localStorage.getItem('app_current_user');
@@ -69,7 +77,8 @@ const getStoredCurrentUser = (): UserAccount | null => {
     return {
       ...user,
       allowedProjects: Array.isArray(user.allowedProjects) ? user.allowedProjects : ['通用公用库'],
-      theme: sanitizeTheme(user.theme)
+      theme: sanitizeTheme(user.theme),
+      noteAutoSave: Boolean(user.noteAutoSave)
     };
   } catch {
     return null;
@@ -88,19 +97,28 @@ const resolveInitialTheme = (user: UserAccount | null): ThemeMode => {
   return fallback;
 };
 
+const resolveInitialAutoSave = (user: UserAccount | null): boolean => {
+  if (!user || user.role === 'guest') return false;
+  if (typeof user.noteAutoSave === 'boolean') return user.noteAutoSave;
+  return localStorage.getItem(getUserAutoSaveStorageKey(user)) === 'true';
+};
+
 const normalizeUser = (user: UserAccount): UserAccount => ({
   ...user,
   allowedProjects: Array.isArray(user.allowedProjects) ? user.allowedProjects : ['通用公用库'],
-  theme: sanitizeTheme(user.theme)
+  theme: sanitizeTheme(user.theme),
+  noteAutoSave: Boolean(user.noteAutoSave)
 });
 
 const initialUser = getStoredCurrentUser();
 const initialTheme = resolveInitialTheme(initialUser);
+const initialAutoSave = resolveInitialAutoSave(initialUser);
 
 export const useAuthStore = create<AuthStore>((set, get) => ({
   users: [],
   currentUser: initialUser,
   theme: initialTheme,
+  noteAutoSave: initialAutoSave,
 
   fetchUsers: async () => {
     try {
@@ -111,7 +129,6 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     }
   },
 
-  // 页面加载时向后端拉取该账号最新配置（含跨设备保存的主题偏好）
   syncCurrentUser: async () => {
     const curr = get().currentUser;
     if (!curr || curr.role === 'guest') return;
@@ -119,16 +136,19 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       const me = await api.auth.getMe();
       const user = normalizeUser(me);
       const serverTheme = sanitizeTheme(user.theme);
+      const serverAutoSave = Boolean(user.noteAutoSave);
+
       applyThemeToDom(serverTheme);
       localStorage.setItem(getUserThemeStorageKey(user), serverTheme);
+      localStorage.setItem(getUserAutoSaveStorageKey(user), String(serverAutoSave));
       localStorage.setItem('app_current_user', JSON.stringify(user));
-      set({ currentUser: user, theme: serverTheme });
+
+      set({ currentUser: user, theme: serverTheme, noteAutoSave: serverAutoSave });
     } catch (err) {
       console.error('同步用户配置失败', err);
     }
   },
 
-  // 切换界面风格（立即生效并绑定当前用户持久化到云端数据库）
   setTheme: async (nextTheme) => {
     const safeTheme = sanitizeTheme(nextTheme);
     const curr = get().currentUser;
@@ -152,19 +172,41 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     }
   },
 
+  // 切换笔记自动保存开关（立即生效并绑定当前账号持久化至云端数据库）
+  setNoteAutoSave: async (enabled) => {
+    const nextVal = Boolean(enabled);
+    const curr = get().currentUser;
+    set({ noteAutoSave: nextVal });
+
+    if (curr && curr.role !== 'guest') {
+      localStorage.setItem(getUserAutoSaveStorageKey(curr), String(nextVal));
+      const updatedUser: UserAccount = { ...curr, noteAutoSave: nextVal };
+      localStorage.setItem('app_current_user', JSON.stringify(updatedUser));
+      set({ currentUser: updatedUser });
+
+      try {
+        await api.auth.updateNoteAutoSave(nextVal);
+      } catch (err) {
+        console.error('保存笔记自动保存偏好至云端失败:', err);
+      }
+    }
+  },
+
   login: async (username, password) => {
     try {
       const res = await api.auth.login(username, password);
       const user = normalizeUser(res.user);
       const userTheme = sanitizeTheme(user.theme || localStorage.getItem(getUserThemeStorageKey(user)) || 'dark');
-      const finalUser = { ...user, theme: userTheme };
+      const userAutoSave = Boolean(user.noteAutoSave);
+      const finalUser = { ...user, theme: userTheme, noteAutoSave: userAutoSave };
 
       localStorage.setItem('access_token', res.access_token);
       localStorage.setItem('app_current_user', JSON.stringify(finalUser));
       localStorage.setItem(getUserThemeStorageKey(finalUser), userTheme);
+      localStorage.setItem(getUserAutoSaveStorageKey(finalUser), String(userAutoSave));
       applyThemeToDom(userTheme);
 
-      set({ currentUser: finalUser, theme: userTheme });
+      set({ currentUser: finalUser, theme: userTheme, noteAutoSave: userAutoSave });
       return { success: true, mustChange: finalUser.mustChangePassword };
     } catch (err) {
       return { success: false, message: err instanceof Error ? err.message : '登录异常' };
@@ -180,10 +222,11 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       role: 'guest',
       allowedProjects: [],
       theme: savedGuestTheme,
+      noteAutoSave: false,
       createdAt: new Date().toLocaleDateString('zh-CN')
     };
     applyThemeToDom(savedGuestTheme);
-    set({ currentUser: guest, theme: savedGuestTheme });
+    set({ currentUser: guest, theme: savedGuestTheme, noteAutoSave: false });
     localStorage.setItem('app_current_user', JSON.stringify(guest));
   },
 
@@ -191,7 +234,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     localStorage.removeItem('access_token');
     localStorage.removeItem('app_current_user');
     applyThemeToDom('dark');
-    set({ currentUser: null, theme: 'dark' });
+    set({ currentUser: null, theme: 'dark', noteAutoSave: false });
   },
 
   createUser: async (username, name, allowedProjects) => {

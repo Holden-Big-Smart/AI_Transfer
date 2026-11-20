@@ -5,14 +5,20 @@ import {
   ChevronLeft, ChevronRight, Folder, Sparkles, RefreshCw, GripVertical,
   PanelLeftClose, PanelLeftOpen, WrapText, Globe, Lock, Download, Upload, X
 } from 'lucide-react';
-import { useNoteStore, blocksToRichHtml, formatDefaultNoteTitle } from '../../store/useNoteStore';
-import type { CodePage, NoteItem } from '../../store/useNoteStore';
+import {
+  useNoteStore,
+  type CodePage,
+  type NoteItem,
+  blocksToRichHtml,
+  formatDefaultNoteTitle
+} from '../../store/useNoteStore';
 import { useAuthStore } from '../../store/useAuthStore';
+import { api } from '../../utils/api';
 import { SyntaxHighlightEditor } from '../../components/notes/SyntaxHighlightEditor';
 import RichTextNoteEditor from '../../components/notes/RichTextNoteEditor';
 
 // ============================================================================
-// 富文本 HTML <-> Markdown / 纯文本双向转换工具（支持嵌套待办与 4 级重要度）
+// 富文本 HTML <-> Markdown 双向转换工具
 // ============================================================================
 const PRIORITY_MD_TAG: Record<string, string> = {
   high: '[紧急] ',
@@ -112,7 +118,6 @@ function serializeBlockToMarkdown(node: globalThis.Node, depth = 0): string {
         if (subTag === 'ul' || subTag === 'ol') {
           subParts.push(serializeBlockToMarkdown(sub, depth + 1).replace(/\n$/, ''));
         } else if (subTag === 'div') {
-          // 兼容普通 DOM 结构下的内容包装层
           Array.from(sub.children).forEach((innerChild) => {
             const icTag = innerChild.tagName.toLowerCase();
             if (icTag === 'ul' || icTag === 'ol') {
@@ -207,7 +212,6 @@ function formatMdInlineToHtml(text: string): string {
   return html;
 }
 
-// 将导入的 Markdown 文本（含代码块、图片、多级缩进待办与优先级）解析为 TipTap HTML
 function parseMarkdownToRichHtml(mdText: string): string {
   const lines = mdText.replace(/\r\n/g, '\n').split('\n');
   const out: string[] = [];
@@ -234,7 +238,6 @@ function parseMarkdownToRichHtml(mdText: string): string {
   while (i < lines.length) {
     const line = lines[i];
 
-    // 1. 围栏代码块
     const codeMatch = line.match(/^```(\w*)\s*$/);
     if (codeMatch) {
       const lang = codeMatch[1] || 'python';
@@ -251,7 +254,6 @@ function parseMarkdownToRichHtml(mdText: string): string {
       continue;
     }
 
-    // 2. 多级任务待办列表 (- [ ] / - [x]，支持 [紧急]/[重要]/[普通]/[低])
     if (line.match(/^(\s*)[-*]\s+\[([ xX])\]\s+(.*)$/)) {
       const roots: ParsedTaskNode[] = [];
       const stack: ParsedTaskNode[] = [];
@@ -295,7 +297,6 @@ function parseMarkdownToRichHtml(mdText: string): string {
       continue;
     }
 
-    // 3. 图片行
     const imgMatch = line.match(/^!\[([^\]]*)\]\(([^)]+)\)\s*$/);
     if (imgMatch) {
       out.push(
@@ -305,7 +306,6 @@ function parseMarkdownToRichHtml(mdText: string): string {
       continue;
     }
 
-    // 4. 标题 / 分割线 / 引用 / 普通列表 / 段落
     if (line.startsWith('### ')) {
       out.push(`<h3>${formatMdInlineToHtml(line.slice(4))}</h3>`);
     } else if (line.startsWith('## ')) {
@@ -351,12 +351,12 @@ function triggerBrowserDownload(filename: string, content: string, mime = 'text/
 // 笔记主页面组件
 // ============================================================================
 export default function Notes() {
-  const { currentUser } = useAuthStore();
+  const { currentUser, noteAutoSave, setNoteAutoSave } = useAuthStore();
   const {
     folders, notes, selectedFolderId, activeNoteId,
     loadNotesData, checkRemoteVersion, setSelectedFolderId, setActiveNoteId,
     createFolder, deleteFolder, saveNote, toggleNotePublic, deleteNote,
-    importNotesBackup
+    importNotesBackup, setUnsavedState, registerDraftHandlers, requestProtectedAction
   } = useNoteStore();
 
   const isGuest = currentUser?.role === 'guest';
@@ -366,13 +366,11 @@ export default function Notes() {
   const [isPublic, setIsPublic] = useState(false);
   const [activeTabIdx, setActiveTabIdx] = useState(0);
 
-  // 左侧目录折叠与移动端抽屉状态
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(() => {
     return localStorage.getItem('notes_sidebar_collapsed') === 'true';
   });
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
 
-  // 代码自动换行状态（与富文本内嵌折叠代码窗全局联动）
   const [wordWrap, setWordWrap] = useState<boolean>(() => {
     return localStorage.getItem('notes_code_word_wrap') === 'true';
   });
@@ -396,28 +394,8 @@ export default function Notes() {
     targetMode: 'new_note'
   });
 
-  const handleToggleSidebar = () => {
-    if (window.innerWidth < 768) {
-      setMobileDrawerOpen((prev) => !prev);
-    } else {
-      setIsSidebarCollapsed((prev) => {
-        const next = !prev;
-        localStorage.setItem('notes_sidebar_collapsed', String(next));
-        return next;
-      });
-    }
-  };
-
-  const handleToggleWordWrap = () => {
-    setWordWrap((prev) => {
-      const next = !prev;
-      localStorage.setItem('notes_code_word_wrap', String(next));
-      window.dispatchEvent(new CustomEvent('notes_word_wrap_change'));
-      return next;
-    });
-  };
-
   const [isDirty, setIsDirty] = useState(false);
+  const [isAutoSaving, setIsAutoSaving] = useState(false);
   const [hasRemoteUpdate, setHasRemoteUpdate] = useState(false);
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -426,6 +404,11 @@ export default function Notes() {
   const [dragOverTabIdx, setDragOverTabIdx] = useState<number | null>(null);
 
   const importFileInputRef = useRef<HTMLInputElement>(null);
+
+  // 版本防回弹追踪：区分“本地自动保存回写”与“切换笔记/远端刷新”
+  const draftRevisionRef = useRef<number>(0);
+  const skipNextActiveNoteHydrateRef = useRef<boolean>(false);
+  const keepaliveSentRevisionRef = useRef<number>(-1);
 
   const [isAddingFolder, setIsAddingFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
@@ -449,7 +432,25 @@ export default function Notes() {
   const activeNote = notes.find((n) => n.id === activeNoteId) || null;
   const canEditActiveNote = !isGuest && (activeNote ? activeNote.isOwner !== false : true);
 
+  // 同步本地 isDirty 状态至全局 store（供侧边栏跨模块跳转拦截）
   useEffect(() => {
+    setUnsavedState(isDirty && canEditActiveNote);
+  }, [isDirty, canEditActiveNote, setUnsavedState]);
+
+  // 离开笔记页卸载时清理全局未保存守卫
+  useEffect(() => {
+    return () => {
+      setUnsavedState(false);
+      registerDraftHandlers(null, null);
+    };
+  }, [setUnsavedState, registerDraftHandlers]);
+
+  // 切换笔记或远端刷新时回填工作区（自动跳过自身保存触发的重复回写，防止打断连续输入）
+  useEffect(() => {
+    if (skipNextActiveNoteHydrateRef.current) {
+      skipNextActiveNoteHydrateRef.current = false;
+      return;
+    }
     if (activeNote) {
       setTitle(activeNote.title);
       setCodePages(activeNote.codePages || []);
@@ -465,12 +466,155 @@ export default function Notes() {
     }
   }, [activeNote]);
 
+  // 始终保留最新草稿快照供快捷键、离页守卫与自动保存读取
+  const latestDraftRef = useRef({
+    activeNoteId,
+    folderId: activeNote ? activeNote.folderId : selectedFolderId,
+    title,
+    codePages,
+    isPublic,
+    isDirty,
+    canEditActiveNote,
+    noteAutoSave
+  });
+
+  latestDraftRef.current = {
+    activeNoteId,
+    folderId: activeNote ? activeNote.folderId : selectedFolderId,
+    title,
+    codePages,
+    isPublic,
+    isDirty,
+    canEditActiveNote,
+    noteAutoSave
+  };
+
+  // 核心保存函数（支持手动保存与静默自动保存）
+  const saveCurrentDraft = async (silent = false): Promise<boolean> => {
+    const snap = latestDraftRef.current;
+    if (!snap.canEditActiveNote) return true;
+    const revAtStart = draftRevisionRef.current;
+
+    if (silent) setIsAutoSaving(true);
+    skipNextActiveNoteHydrateRef.current = true;
+
+    const saved = await saveNote({
+      id: snap.activeNoteId,
+      folderId: snap.folderId,
+      title: snap.title.trim() || formatDefaultNoteTitle(),
+      codePages: snap.codePages,
+      isPublic: snap.isPublic
+    });
+
+    if (silent) setIsAutoSaving(false);
+
+    if (saved) {
+      if (!snap.title.trim()) {
+        setTitle(saved.title);
+      }
+      // 若保存期间用户没有继续输入新内容，则清除未保存标记
+      if (draftRevisionRef.current === revAtStart) {
+        setIsDirty(false);
+        setUnsavedState(false);
+      }
+      setHasRemoteUpdate(false);
+      if (silent) {
+        showToast('⚡ 已自动保存', 1500);
+      } else {
+        setSaveSuccess(true);
+        setTimeout(() => setSaveSuccess(false), 1800);
+      }
+      return true;
+    }
+
+    skipNextActiveNoteHydrateRef.current = false;
+    return false;
+  };
+
+  const saveFnRef = useRef(saveCurrentDraft);
+  saveFnRef.current = saveCurrentDraft;
+
+  // 向全局 store 注册当前页面的“保存”与“放弃修改”处理器
+  useEffect(() => {
+    registerDraftHandlers(
+      () => saveFnRef.current(false),
+      () => {
+        setIsDirty(false);
+        setUnsavedState(false);
+      }
+    );
+  }, [registerDraftHandlers, setUnsavedState]);
+
+  // 自动保存防抖定时器：开启“自动保存”且存在未保存改动时，停顿 1.5 秒自动保存
+  useEffect(() => {
+    if (!noteAutoSave || !isDirty || !canEditActiveNote) return;
+    const timer = setTimeout(() => {
+      saveFnRef.current(true);
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [noteAutoSave, isDirty, canEditActiveNote, title, codePages, isPublic]);
+
+  // 全局 Ctrl + S / Cmd + S 快捷保存
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        if (latestDraftRef.current.canEditActiveNote) {
+          saveFnRef.current(false);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  // 关闭浏览器标签页 / 刷新网页保护：
+  // - 开启自动保存时：立即通过 keepalive 请求保底落盘，直接放行
+  // - 关闭自动保存时：触发浏览器原生离开确认提醒
+  useEffect(() => {
+    const flushAutoSaveOnExit = () => {
+      const snap = latestDraftRef.current;
+      if (!snap.isDirty || !snap.canEditActiveNote || !snap.noteAutoSave) return;
+      if (keepaliveSentRevisionRef.current === draftRevisionRef.current) return;
+      keepaliveSentRevisionRef.current = draftRevisionRef.current;
+
+      api.notes.saveKeepalive({
+        id: snap.activeNoteId || undefined,
+        folder_id: snap.folderId,
+        title: snap.title.trim() || formatDefaultNoteTitle(),
+        content: '',
+        code_pages: snap.codePages,
+        is_public: snap.isPublic
+      });
+    };
+
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      const snap = latestDraftRef.current;
+      if (!snap.isDirty || !snap.canEditActiveNote) return;
+
+      if (snap.noteAutoSave) {
+        flushAutoSaveOnExit();
+        return;
+      }
+
+      e.preventDefault();
+      e.returnValue = '';
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('pagehide', flushAutoSaveOnExit);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('pagehide', flushAutoSaveOnExit);
+    };
+  }, []);
+
   // 跨端版本轮询同步
   useEffect(() => {
     const checkAndSync = async () => {
       const changed = await checkRemoteVersion();
       if (changed) {
-        if (!isDirty) {
+        if (!latestDraftRef.current.isDirty) {
           await loadNotesData(true);
           setHasRemoteUpdate(false);
           showToast('⚡ 已自动同步远端最新状态', 2500);
@@ -487,18 +631,52 @@ export default function Notes() {
       clearInterval(timer);
       window.removeEventListener('focus', handleFocus);
     };
-  }, [isDirty, checkRemoteVersion, loadNotesData]);
+  }, [checkRemoteVersion, loadNotesData]);
+
+  const markDirty = () => {
+    draftRevisionRef.current += 1;
+    setIsDirty(true);
+  };
 
   const currentPage = codePages[activeTabIdx] || codePages[0];
 
   const updateCurrentPage = (updater: (page: CodePage) => CodePage) => {
     if (!canEditActiveNote) return;
     setCodePages((prev) => prev.map((p, idx) => (idx === activeTabIdx ? updater(p) : p)));
-    setIsDirty(true);
+    markDirty();
+  };
+
+  const handleToggleSidebar = () => {
+    if (window.innerWidth < 768) {
+      setMobileDrawerOpen((prev) => !prev);
+    } else {
+      setIsSidebarCollapsed((prev) => {
+        const next = !prev;
+        localStorage.setItem('notes_sidebar_collapsed', String(next));
+        return next;
+      });
+    }
+  };
+
+  const handleToggleWordWrap = () => {
+    setWordWrap((prev) => {
+      const next = !prev;
+      localStorage.setItem('notes_code_word_wrap', String(next));
+      window.dispatchEvent(new CustomEvent('notes_word_wrap_change'));
+      return next;
+    });
+  };
+
+  const handleToggleAutoSave = async () => {
+    if (isGuest) return;
+    const next = !noteAutoSave;
+    await setNoteAutoSave(next);
+    showToast(next ? '✅ 已开启自动保存（切页/关页自动落盘）' : '已关闭自动保存（切页将弹窗提醒）', 2200);
   };
 
   const handleManualRefresh = async () => {
     setIsRefreshing(true);
+    skipNextActiveNoteHydrateRef.current = false;
     await loadNotesData(true);
     setIsDirty(false);
     setHasRemoteUpdate(false);
@@ -506,38 +684,40 @@ export default function Notes() {
     setTimeout(() => setIsRefreshing(false), 600);
   };
 
-  const handleCreateRecord = async (initialType: 'note' | 'code') => {
+  const handleCreateRecord = (initialType: 'note' | 'code') => {
     if (isGuest) return;
-    const autoTitle = formatDefaultNoteTitle();
-    const firstPage: CodePage =
-      initialType === 'note'
-        ? {
-            id: `pg_${Date.now()}`,
-            title: '笔记_1',
-            pageType: 'note',
-            language: 'python',
-            code: '',
-            blocks: [],
-            richContent: '<p></p>'
-          }
-        : {
-            id: `pg_${Date.now()}`,
-            title: '片段_1.py',
-            pageType: 'code',
-            language: 'python',
-            code: '',
-            blocks: []
-          };
+    requestProtectedAction(async () => {
+      const autoTitle = formatDefaultNoteTitle();
+      const firstPage: CodePage =
+        initialType === 'note'
+          ? {
+              id: `pg_${Date.now()}`,
+              title: '笔记_1',
+              pageType: 'note',
+              language: 'python',
+              code: '',
+              blocks: [],
+              richContent: '<p></p>'
+            }
+          : {
+              id: `pg_${Date.now()}`,
+              title: '片段_1.py',
+              pageType: 'code',
+              language: 'python',
+              code: '',
+              blocks: []
+            };
 
-    await saveNote({
-      id: null,
-      folderId: selectedFolderId,
-      title: autoTitle,
-      codePages: [firstPage],
-      isPublic: false
-    });
-    setActiveTabIdx(0);
-    setMobileDrawerOpen(false);
+      await saveNote({
+        id: null,
+        folderId: selectedFolderId,
+        title: autoTitle,
+        codePages: [firstPage],
+        isPublic: false
+      });
+      setActiveTabIdx(0);
+      setMobileDrawerOpen(false);
+    }, noteAutoSave);
   };
 
   const handleAddPageToFront = (pageType: 'note' | 'code') => {
@@ -565,7 +745,7 @@ export default function Notes() {
 
     setCodePages((prev) => [newPage, ...prev]);
     setActiveTabIdx(0);
-    setIsDirty(true);
+    markDirty();
   };
 
   const handleRemovePage = (idx: number) => {
@@ -580,7 +760,7 @@ export default function Notes() {
     const updated = codePages.filter((_, i) => i !== idx);
     setCodePages(updated);
     setActiveTabIdx((prev) => Math.max(0, Math.min(prev, updated.length - 1)));
-    setIsDirty(true);
+    markDirty();
   };
 
   const handleTabDrop = (targetIdx: number) => {
@@ -600,25 +780,7 @@ export default function Notes() {
 
     setDragTabIdx(null);
     setDragOverTabIdx(null);
-    setIsDirty(true);
-  };
-
-  const handleSaveCurrentNote = async () => {
-    if (!canEditActiveNote) return;
-    const saved = await saveNote({
-      id: activeNoteId,
-      folderId: activeNote ? activeNote.folderId : selectedFolderId,
-      title: title.trim() || formatDefaultNoteTitle(),
-      codePages,
-      isPublic
-    });
-    if (saved) {
-      setTitle(saved.title);
-      setIsDirty(false);
-      setHasRemoteUpdate(false);
-      setSaveSuccess(true);
-      setTimeout(() => setSaveSuccess(false), 1800);
-    }
+    markDirty();
   };
 
   const handleTogglePublicStatus = async () => {
@@ -626,18 +788,19 @@ export default function Notes() {
     const nextState = !isPublic;
     setIsPublic(nextState);
     if (activeNoteId) {
+      skipNextActiveNoteHydrateRef.current = true;
       const ok = await toggleNotePublic(activeNoteId, nextState);
       if (ok) {
         showToast(nextState ? '🌐 已设为公开 (访客可见)' : '🔒 已设为仅自己可见', 2000);
+      } else {
+        skipNextActiveNoteHydrateRef.current = false;
       }
     } else {
-      setIsDirty(true);
+      markDirty();
     }
   };
 
-  // ============================================================================
-  // 导入 / 导出核心处理
-  // ============================================================================
+  // 导入 / 导出
   const handleExportCurrentMarkdown = () => {
     const safeName = (title || '未命名笔记').replace(/[\\/:*?"<>|]/g, '_');
     const mdContent = convertNoteToMarkdown(title || '未命名笔记', codePages);
@@ -778,6 +941,7 @@ export default function Notes() {
             codePages: nextPages,
             isPublic
           });
+          setIsDirty(false);
         } else {
           const newTitle =
             otherFiles.length === 1
@@ -791,6 +955,7 @@ export default function Notes() {
             isPublic: false
           });
           setActiveTabIdx(0);
+          setIsDirty(false);
         }
       }
 
@@ -801,7 +966,6 @@ export default function Notes() {
     }
   };
 
-  // 提取整洁文本供“一键复制本页”使用
   const getPageCopyableText = (page: CodePage | undefined): string => {
     if (!page) return '';
     if (page.pageType === 'code') return page.code || '';
@@ -938,7 +1102,9 @@ export default function Notes() {
         {!isGuest && (
           <div className="p-2 border-b border-gray-800 max-h-36 overflow-y-auto space-y-1">
             <div
-              onClick={() => setSelectedFolderId(null)}
+              onClick={() =>
+                requestProtectedAction(() => setSelectedFolderId(null), noteAutoSave)
+              }
               className={`flex items-center justify-between px-3 py-1.5 rounded-lg cursor-pointer text-xs transition-colors ${
                 selectedFolderId === null
                   ? 'bg-blue-600/20 text-blue-400 font-medium'
@@ -954,7 +1120,9 @@ export default function Notes() {
             {folders.map((folder) => (
               <div
                 key={folder.id}
-                onClick={() => setSelectedFolderId(folder.id)}
+                onClick={() =>
+                  requestProtectedAction(() => setSelectedFolderId(folder.id), noteAutoSave)
+                }
                 className={`group flex items-center justify-between px-3 py-1.5 rounded-lg cursor-pointer text-xs transition-colors ${
                   selectedFolderId === folder.id
                     ? 'bg-blue-600/20 text-blue-400 font-medium'
@@ -994,8 +1162,14 @@ export default function Notes() {
                 <div
                   key={item.id}
                   onClick={() => {
-                    setActiveNoteId(item.id);
-                    setMobileDrawerOpen(false);
+                    if (item.id === activeNoteId) {
+                      setMobileDrawerOpen(false);
+                      return;
+                    }
+                    requestProtectedAction(() => {
+                      setActiveNoteId(item.id);
+                      setMobileDrawerOpen(false);
+                    }, noteAutoSave);
                   }}
                   className={`group p-3 rounded-xl cursor-pointer border transition-all ${
                     activeNoteId === item.id
@@ -1060,7 +1234,7 @@ export default function Notes() {
               onChange={(e) => {
                 if (!canEditActiveNote) return;
                 setTitle(e.target.value);
-                setIsDirty(true);
+                markDirty();
               }}
               placeholder={
                 isGuest ? '公开笔记只读视图' : `留空保存将自动命名为: ${formatDefaultNoteTitle()}`
@@ -1079,7 +1253,7 @@ export default function Notes() {
             {canEditActiveNote && activeNote && (
               <button
                 onClick={handleTogglePublicStatus}
-                className={`flex items-center gap-1.5 text-xs px-3 py-2 rounded-xl border transition-colors ${
+                className={`flex items-center gap-1.5 text-xs px-2.5 py-2 rounded-xl border transition-colors ${
                   isPublic
                     ? 'bg-green-950/40 border-green-600/60 text-green-300 hover:bg-green-900/50'
                     : 'bg-[#1a1c23] border-gray-700 text-gray-400 hover:text-gray-200'
@@ -1087,7 +1261,34 @@ export default function Notes() {
                 title="开启公开后，未登录的访客也可查看并复制此笔记"
               >
                 {isPublic ? <Globe size={14} className="text-green-400" /> : <Lock size={14} />}
-                <span>{isPublic ? '公开 (访客可见)' : '仅自己可见'}</span>
+                <span className="hidden lg:inline">{isPublic ? '公开 (访客可见)' : '仅自己可见'}</span>
+              </button>
+            )}
+
+            {/* 自动保存开关（跟随账号持久化，开启后输入停顿、切页、关闭网页自动保存） */}
+            {!isGuest && (
+              <button
+                type="button"
+                onClick={handleToggleAutoSave}
+                className={`flex items-center gap-1.5 text-xs px-2.5 py-2 rounded-xl border transition-colors ${
+                  noteAutoSave
+                    ? 'bg-emerald-600/20 border-emerald-500/50 text-emerald-300 font-medium'
+                    : 'bg-[#1a1c23] border-gray-700 text-gray-400 hover:text-gray-200'
+                }`}
+                title="跟账号绑定：开启后切笔记、切模块及关闭网页均自动保存当前笔记"
+              >
+                <span
+                  className={`w-6 h-3.5 rounded-full relative transition-colors inline-block shrink-0 ${
+                    noteAutoSave ? 'bg-emerald-500' : 'bg-gray-600'
+                  }`}
+                >
+                  <span
+                    className={`w-2.5 h-2.5 rounded-full bg-white absolute top-0.5 transition-all ${
+                      noteAutoSave ? 'left-3' : 'left-0.5'
+                    }`}
+                  />
+                </span>
+                <span>{isAutoSaving ? '保存中...' : '自动保存'}</span>
               </button>
             )}
 
@@ -1157,11 +1358,15 @@ export default function Notes() {
 
             {canEditActiveNote && (
               <button
-                onClick={handleSaveCurrentNote}
-                className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-3.5 py-2 rounded-xl transition-colors shadow-lg shadow-blue-600/20"
+                onClick={() => saveCurrentDraft(false)}
+                className="relative flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-3.5 py-2 rounded-xl transition-colors shadow-lg shadow-blue-600/20"
+                title="保存笔记 (快捷键: Ctrl+S)"
               >
                 {saveSuccess ? <Check size={15} /> : <Save size={15} />}
-                <span>{saveSuccess ? '已保存' : '保存笔记'}</span>
+                <span>{saveSuccess ? '已保存' : isDirty ? '保存笔记 *' : '保存笔记'}</span>
+                {isDirty && !saveSuccess && (
+                  <span className="w-2 h-2 rounded-full bg-amber-300 absolute -top-0.5 -right-0.5 shadow" />
+                )}
               </button>
             )}
           </div>
@@ -1434,7 +1639,7 @@ export default function Notes() {
             <div className="flex justify-end gap-2">
               <button
                 onClick={() => setImportModal({ isOpen: false, files: [], targetMode: 'new_note' })}
-                className="px-3.5 py-1.5 rounded-xl text-xs text-gray-400 hover:bg-[#1a1c23]"
+                className="px-3.5 py-1.5 rounded-xl text-xs text-gray-400 hover:bg-[#1e2128]"
               >
                 取消
               </button>

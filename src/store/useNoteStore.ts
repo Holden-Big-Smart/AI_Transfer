@@ -243,6 +243,22 @@ interface NoteStore {
   deleteNote: (id: string) => Promise<void>;
   importNotesBackup: (backupData: { folders?: Array<{ name: string }>; notes?: any[] }) => Promise<number>;
   saveNoteFromAI: (title: string, textContent: string, codeSnippets?: string[]) => Promise<NoteItem | null>;
+
+  // 全局未保存切换拦截守卫
+  hasUnsavedChanges: boolean;
+  unsavedGuardOpen: boolean;
+  isSavingBeforeLeave: boolean;
+  pendingNavigationAction: (() => void) | null;
+  saveCurrentDraftHandler: (() => Promise<boolean>) | null;
+  discardCurrentDraftHandler: (() => void) | null;
+
+  setUnsavedState: (dirty: boolean) => void;
+  registerDraftHandlers: (
+    saveFn: (() => Promise<boolean>) | null,
+    discardFn: (() => void) | null
+  ) => void;
+  requestProtectedAction: (action: () => void, autoSaveEnabled: boolean) => Promise<void>;
+  resolveUnsavedGuard: (choice: 'save' | 'discard' | 'cancel') => Promise<void>;
 }
 
 export const useNoteStore = create<NoteStore>((set, get) => ({
@@ -252,6 +268,88 @@ export const useNoteStore = create<NoteStore>((set, get) => ({
   activeNoteId: null,
   isLoading: false,
   serverVersion: '',
+
+  hasUnsavedChanges: false,
+  unsavedGuardOpen: false,
+  isSavingBeforeLeave: false,
+  pendingNavigationAction: null,
+  saveCurrentDraftHandler: null,
+  discardCurrentDraftHandler: null,
+
+  setUnsavedState: (dirty) => set({ hasUnsavedChanges: dirty }),
+
+  registerDraftHandlers: (saveFn, discardFn) =>
+    set({
+      saveCurrentDraftHandler: saveFn,
+      discardCurrentDraftHandler: discardFn
+    }),
+
+  requestProtectedAction: async (action, autoSaveEnabled) => {
+    const state = get();
+    if (!state.hasUnsavedChanges) {
+      action();
+      return;
+    }
+
+    // 若用户开启了“自动保存”，切页/切笔记前直接静默保存后放行
+    if (autoSaveEnabled) {
+      set({ isSavingBeforeLeave: true });
+      try {
+        const ok = state.saveCurrentDraftHandler ? await state.saveCurrentDraftHandler() : true;
+        if (ok) {
+          set({ hasUnsavedChanges: false });
+          action();
+        }
+      } finally {
+        set({ isSavingBeforeLeave: false });
+      }
+      return;
+    }
+
+    // 未开启自动保存：打开全局确认弹窗
+    set({
+      unsavedGuardOpen: true,
+      pendingNavigationAction: action
+    });
+  },
+
+  resolveUnsavedGuard: async (choice) => {
+    const state = get();
+    const nextAction = state.pendingNavigationAction;
+
+    if (choice === 'cancel') {
+      set({ unsavedGuardOpen: false, pendingNavigationAction: null });
+      return;
+    }
+
+    if (choice === 'discard') {
+      state.discardCurrentDraftHandler?.();
+      set({
+        hasUnsavedChanges: false,
+        unsavedGuardOpen: false,
+        pendingNavigationAction: null
+      });
+      nextAction?.();
+      return;
+    }
+
+    if (choice === 'save') {
+      set({ isSavingBeforeLeave: true });
+      try {
+        const ok = state.saveCurrentDraftHandler ? await state.saveCurrentDraftHandler() : true;
+        if (ok) {
+          set({
+            hasUnsavedChanges: false,
+            unsavedGuardOpen: false,
+            pendingNavigationAction: null
+          });
+          nextAction?.();
+        }
+      } finally {
+        set({ isSavingBeforeLeave: false });
+      }
+    }
+  },
 
   loadNotesData: async (silent = false) => {
     if (!silent) set({ isLoading: true });

@@ -1,6 +1,6 @@
 // src/components/layout/Sidebar.tsx
 import { useState, useRef, useEffect } from 'react';
-import { NavLink } from 'react-router-dom';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import {
   FolderKanban,
   Bot,
@@ -16,8 +16,8 @@ import {
   Leaf,
   Check
 } from 'lucide-react';
-import { useAuthStore } from '../../store/useAuthStore';
-import type { ThemeMode } from '../../store/useAuthStore';
+import { useAuthStore, type ThemeMode } from '../../store/useAuthStore';
+import { useNoteStore } from '../../store/useNoteStore';
 
 const THEME_OPTIONS: Array<{ value: ThemeMode; label: string; desc: string }> = [
   { value: 'dark', label: '暗色风格', desc: '深邃护眼默认主题' },
@@ -26,7 +26,11 @@ const THEME_OPTIONS: Array<{ value: ThemeMode; label: string; desc: string }> = 
 ];
 
 export default function Sidebar() {
-  const { currentUser, theme, setTheme, logout } = useAuthStore();
+  const { currentUser, theme, noteAutoSave, setTheme, logout } = useAuthStore();
+  const { hasUnsavedChanges, requestProtectedAction } = useNoteStore();
+  const navigate = useNavigate();
+  const location = useLocation();
+
   const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false);
   const menuContainerRef = useRef<HTMLDivElement>(null);
 
@@ -41,6 +45,22 @@ export default function Sidebar() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [isThemeMenuOpen]);
 
+  const handleGuardedNav = (e: React.MouseEvent, targetPath: string) => {
+    if (location.pathname.startsWith(targetPath)) return;
+    if (hasUnsavedChanges) {
+      e.preventDefault();
+      requestProtectedAction(() => navigate(targetPath), noteAutoSave);
+    }
+  };
+
+  const handleGuardedLogout = () => {
+    if (hasUnsavedChanges) {
+      requestProtectedAction(() => logout(), noteAutoSave);
+    } else {
+      logout();
+    }
+  };
+
   const renderThemeIcon = (mode: ThemeMode, size = 16) => {
     if (mode === 'light') return <Sun size={size} className="text-amber-400" />;
     if (mode === 'eyecare') return <Leaf size={size} className="text-emerald-400" />;
@@ -49,7 +69,7 @@ export default function Sidebar() {
 
   return (
     <div ref={menuContainerRef} className="contents">
-      {/* 桌面端左侧竖向导航栏 (>= 768px 显示) */}
+      {/* 桌面端左侧竖向导航栏 */}
       <aside className="hidden md:flex w-16 bg-[#16181d] border-r border-gray-800 flex-col items-center py-5 select-none shrink-0 z-30 relative">
         <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center font-black text-white text-base shadow-lg shadow-blue-500/20 mb-8">
           AI
@@ -58,6 +78,7 @@ export default function Sidebar() {
         <nav className="flex flex-col gap-4 flex-1 w-full px-2">
           <NavLink
             to="/file-center"
+            onClick={(e) => handleGuardedNav(e, '/file-center')}
             className={({ isActive }) =>
               `flex flex-col items-center justify-center py-3 rounded-xl transition-all ${
                 isActive
@@ -73,6 +94,7 @@ export default function Sidebar() {
 
           <NavLink
             to="/ai-copilot"
+            onClick={(e) => handleGuardedNav(e, '/ai-copilot')}
             className={({ isActive }) =>
               `flex flex-col items-center justify-center py-3 rounded-xl transition-all ${
                 isActive
@@ -88,8 +110,9 @@ export default function Sidebar() {
 
           <NavLink
             to="/notes"
+            onClick={(e) => handleGuardedNav(e, '/notes')}
             className={({ isActive }) =>
-              `flex flex-col items-center justify-center py-3 rounded-xl transition-all ${
+              `flex flex-col items-center justify-center py-3 rounded-xl transition-all relative ${
                 isActive
                   ? 'bg-blue-600/15 text-blue-400 font-medium'
                   : 'text-gray-400 hover:bg-gray-800/60 hover:text-gray-200'
@@ -99,11 +122,18 @@ export default function Sidebar() {
           >
             <NotebookPen size={20} className="mb-1" />
             <span className="text-[10px]">笔记</span>
+            {hasUnsavedChanges && !noteAutoSave && (
+              <span
+                className="w-2 h-2 rounded-full bg-amber-400 absolute top-2 right-2"
+                title="当前笔记有未保存更改"
+              />
+            )}
           </NavLink>
 
           {currentUser?.role === 'admin' && (
             <NavLink
               to="/users"
+              onClick={(e) => handleGuardedNav(e, '/users')}
               className={({ isActive }) =>
                 `flex flex-col items-center justify-center py-3 rounded-xl transition-all ${
                   isActive
@@ -137,7 +167,6 @@ export default function Sidebar() {
             </span>
           </div>
 
-          {/* 主题风格切换按钮 */}
           <button
             onClick={() => setIsThemeMenuOpen((prev) => !prev)}
             className="p-2 text-gray-400 hover:bg-gray-800 rounded-lg transition-colors"
@@ -157,7 +186,7 @@ export default function Sidebar() {
           )}
 
           <button
-            onClick={logout}
+            onClick={handleGuardedLogout}
             className="p-2 text-gray-500 hover:text-red-400 hover:bg-gray-800 rounded-lg transition-colors"
             title="退出登录"
           >
@@ -166,10 +195,11 @@ export default function Sidebar() {
         </div>
       </aside>
 
-      {/* 移动端底部固定导航栏 (< 768px 显示) */}
+      {/* 移动端底部固定导航栏 */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 h-14 bg-[#16181d]/95 backdrop-blur border-t border-gray-800 flex items-center justify-around px-1 z-40 select-none">
         <NavLink
           to="/file-center"
+          onClick={(e) => handleGuardedNav(e, '/file-center')}
           className={({ isActive }) =>
             `flex flex-col items-center justify-center py-1 px-2.5 rounded-lg ${
               isActive ? 'text-blue-400 font-semibold' : 'text-gray-400'
@@ -182,6 +212,7 @@ export default function Sidebar() {
 
         <NavLink
           to="/ai-copilot"
+          onClick={(e) => handleGuardedNav(e, '/ai-copilot')}
           className={({ isActive }) =>
             `flex flex-col items-center justify-center py-1 px-2.5 rounded-lg ${
               isActive ? 'text-blue-400 font-semibold' : 'text-gray-400'
@@ -194,19 +225,24 @@ export default function Sidebar() {
 
         <NavLink
           to="/notes"
+          onClick={(e) => handleGuardedNav(e, '/notes')}
           className={({ isActive }) =>
-            `flex flex-col items-center justify-center py-1 px-2.5 rounded-lg ${
+            `flex flex-col items-center justify-center py-1 px-2.5 rounded-lg relative ${
               isActive ? 'text-blue-400 font-semibold' : 'text-gray-400'
             }`
           }
         >
           <NotebookPen size={18} />
           <span className="text-[10px] mt-0.5">笔记</span>
+          {hasUnsavedChanges && !noteAutoSave && (
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 absolute top-1 right-1.5" />
+          )}
         </NavLink>
 
         {currentUser?.role === 'admin' && (
           <NavLink
             to="/users"
+            onClick={(e) => handleGuardedNav(e, '/users')}
             className={({ isActive }) =>
               `flex flex-col items-center justify-center py-1 px-2.5 rounded-lg ${
                 isActive ? 'text-blue-400 font-semibold' : 'text-gray-400'
@@ -227,7 +263,7 @@ export default function Sidebar() {
         </button>
 
         <button
-          onClick={logout}
+          onClick={handleGuardedLogout}
           className="flex flex-col items-center justify-center py-1 px-2 text-gray-400 hover:text-red-400"
         >
           <LogOut size={18} />
@@ -235,7 +271,7 @@ export default function Sidebar() {
         </button>
       </nav>
 
-      {/* 主题选择悬浮面板（桌面端停靠在左下角侧栏右侧，移动端停靠在底部栏上方） */}
+      {/* 主题选择悬浮面板 */}
       {isThemeMenuOpen && (
         <div className="fixed bottom-16 right-3 md:bottom-16 md:left-[72px] md:right-auto w-52 bg-[#252830] border border-gray-700 rounded-2xl shadow-2xl p-2 z-50 select-none">
           <div className="px-2.5 py-1.5 text-[11px] font-semibold text-gray-400 border-b border-gray-800 mb-1">

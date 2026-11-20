@@ -66,6 +66,13 @@ export const api = {
         body: JSON.stringify({ theme })
       }).then(handleResponse<{ message: string; theme: 'dark' | 'light' | 'eyecare' }>),
 
+    updateNoteAutoSave: (note_auto_save: boolean) =>
+      fetch(`${API_BASE_URL}/api/auth/note-auto-save`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ note_auto_save })
+      }).then(handleResponse<{ message: string; noteAutoSave: boolean }>),
+
     getUsers: () =>
       fetch(`${API_BASE_URL}/api/auth/users`, {
         headers: getAuthHeaders()
@@ -272,6 +279,26 @@ export const api = {
         headers: getAuthHeaders(),
         body: JSON.stringify(data)
       }).then(handleResponse<NoteItem>),
+
+    saveKeepalive: (data: {
+      id?: string;
+      folder_id: string | null;
+      title: string;
+      content: string;
+      code_pages: any[];
+      is_public?: boolean;
+    }) => {
+      try {
+        fetch(`${API_BASE_URL}/api/notes/save`, {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          body: JSON.stringify(data),
+          keepalive: true
+        });
+      } catch {
+        // 忽略关闭页面时的中断异常
+      }
+    },
 
     // 切换笔记的公开/私密状态
     togglePublic: (note_id: string, is_public: boolean) =>

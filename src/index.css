@@ -526,13 +526,13 @@ html, body, #root {
   margin: 0.35rem 0;
 }
 
-/* 嵌套子待办自动缩进并带左侧结构引导线 */
+/* 嵌套子待办：将引导线精准回拉至父待办勾选方框正下方，单级净缩进收紧为 22px */
 .tiptap-editor ul[data-type="taskList"] ul[data-type="taskList"] {
-  padding-left: 1.5rem;
-  margin-top: 0.25rem;
+  margin-left: -58px;
+  padding-left: 14px;
+  margin-top: 0.2rem;
   margin-bottom: 0.15rem;
   border-left: 1px dashed var(--border-main);
-  margin-left: 0.45rem;
 }
 
 .tiptap-editor li[data-type="taskItem"] .task-item-content > p,
@@ -573,9 +573,13 @@ html, body, #root {
 
 /* 4 级重要度徽章（暗色模式） */
 .todo-prio-badge {
+  width: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-size: 10px;
   line-height: 1;
-  padding: 3px 6px;
+  padding: 3px 0;
   border-radius: 9999px;
   font-weight: 600;
   border: 1px solid transparent;

@@ -8,8 +8,9 @@ import Notes from './pages/Notes';
 import UserManagement from './pages/UserManagement';
 import Login from './pages/Login';
 import { useAuthStore, applyThemeToDom } from './store/useAuthStore';
+import { useNoteStore } from './store/useNoteStore';
 import { resolveDocumentTitle } from './config/siteConfig';
-import { KeyRound, X, AlertCircle } from 'lucide-react';
+import { KeyRound, X, AlertCircle, Save } from 'lucide-react';
 
 // 路由标题动态同步组件（根据 siteConfig.ts 自动更新浏览器标签名为 DCM-用途）
 function RouteTitleSync() {
@@ -22,6 +23,7 @@ function RouteTitleSync() {
 
 function App() {
   const { currentUser, theme, changePassword, syncCurrentUser } = useAuthStore();
+  const { unsavedGuardOpen, isSavingBeforeLeave, resolveUnsavedGuard } = useNoteStore();
 
   const [isPwdModalOpen, setIsPwdModalOpen] = useState(false);
   const [newPwd, setNewPwd] = useState('');
@@ -177,6 +179,54 @@ function App() {
                   className="px-4 py-1.5 bg-yellow-600 hover:bg-yellow-700 text-white rounded-lg text-xs font-medium"
                 >
                   确认保存
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 全局笔记未保存提醒弹窗（切笔记 / 切模块 / 退出登录统一拦截） */}
+        {unsavedGuardOpen && (
+          <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+            <div className="bg-[#252830] border border-gray-700 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-bold text-gray-100 flex items-center gap-2">
+                  <AlertCircle size={17} className="text-amber-400" />
+                  <span>当前笔记有未保存的更改</span>
+                </h3>
+                <button
+                  disabled={isSavingBeforeLeave}
+                  onClick={() => resolveUnsavedGuard('cancel')}
+                  className="text-gray-400 hover:text-white disabled:opacity-40"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+              <p className="text-xs text-gray-400 leading-relaxed mb-5">
+                离开当前页面将丢失尚未保存的内容，是否先将改动保存到云端？（可在笔记右上角开启“自动保存”免去每次提醒）
+              </p>
+              <div className="flex items-center justify-end gap-2 flex-wrap">
+                <button
+                  disabled={isSavingBeforeLeave}
+                  onClick={() => resolveUnsavedGuard('cancel')}
+                  className="px-3 py-1.5 rounded-xl text-xs text-gray-400 hover:bg-[#1e2128] transition-colors"
+                >
+                  取消
+                </button>
+                <button
+                  disabled={isSavingBeforeLeave}
+                  onClick={() => resolveUnsavedGuard('discard')}
+                  className="px-3 py-1.5 rounded-xl text-xs bg-red-950/40 hover:bg-red-900/50 text-red-400 border border-red-800/50 transition-colors"
+                >
+                  不保存，直接离开
+                </button>
+                <button
+                  disabled={isSavingBeforeLeave}
+                  onClick={() => resolveUnsavedGuard('save')}
+                  className="flex items-center gap-1.5 px-4 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-xl text-xs font-medium shadow transition-colors"
+                >
+                  <Save size={13} />
+                  <span>{isSavingBeforeLeave ? '保存中...' : '保存并离开'}</span>
                 </button>
               </div>
             </div>
