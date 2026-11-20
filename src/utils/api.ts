@@ -328,6 +328,79 @@ export const api = {
       }).then(handleResponse<{ message: string }>)
   },
 
+  // === 实时屏幕共享接口 ===
+  screen: {
+    getIceConfig: () =>
+      fetch(`${API_BASE_URL}/api/screen/ice-config`, {
+        headers: getAuthHeaders()
+      }).then(handleResponse<{ iceServers: RTCIceServer[] }>),
+
+    listRooms: () =>
+      fetch(`${API_BASE_URL}/api/screen/rooms`, {
+        headers: getAuthHeaders()
+      }).then(
+        handleResponse<
+          Array<{
+            roomId: string;
+            hostName: string;
+            hostUsername: string;
+            allowMode: 'code' | 'users';
+            qualityLabel: string;
+            createdAt: string;
+            isSelfDevice: boolean;
+            viewerCount: number;
+          }>
+        >
+      ),
+
+    createRoom: (data: {
+      allow_mode: 'code' | 'users';
+      allowed_user_ids: string[];
+      quality_label: string;
+    }) =>
+      fetch(`${API_BASE_URL}/api/screen/rooms`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(data)
+      }).then(
+        handleResponse<{
+          roomId: string;
+          clientId: string;
+          wsTicket: string;
+          allowMode: 'code' | 'users';
+          qualityLabel: string;
+          createdAt: string;
+        }>
+      ),
+
+    joinRoom: (roomId: string) =>
+      fetch(`${API_BASE_URL}/api/screen/rooms/${encodeURIComponent(roomId)}/join`, {
+        method: 'POST',
+        headers: getAuthHeaders()
+      }).then(
+        handleResponse<{
+          roomId: string;
+          clientId: string;
+          wsTicket: string;
+          hostClientId: string;
+          hostName: string;
+          hostUsername: string;
+          qualityLabel: string;
+        }>
+      ),
+
+    closeRoom: (roomId: string) =>
+      fetch(`${API_BASE_URL}/api/screen/rooms/${encodeURIComponent(roomId)}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders()
+      }).then(handleResponse<{ message: string }>),
+
+    getWsUrl: (roomId: string, ticket: string) => {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      return `${protocol}//${window.location.host}/api/screen/ws/${encodeURIComponent(roomId)}?ticket=${encodeURIComponent(ticket)}`;
+    }
+  },
+
   // === 审计接口 ===
   audit: {
     getLogs: () =>

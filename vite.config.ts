@@ -10,6 +10,7 @@ export default defineConfig({
       '/api': {
         target: 'https://www.dacsmy.online:8443',
         changeOrigin: true,
+        ws: true,
         secure: false,
       }
     }

@@ -12,6 +12,7 @@ export interface RouteTitleRule {
 export const ROUTE_TITLE_RULES: RouteTitleRule[] = [
   { pathPrefix: '/file-center', label: '文件' },
   { pathPrefix: '/notes', label: '笔记' },
+  { pathPrefix: '/screen-share', label: '投屏' },
   { pathPrefix: '/ai-copilot', label: '助手' },
   { pathPrefix: '/users', label: '成员' },
   { pathPrefix: '/login', label: '登录' }

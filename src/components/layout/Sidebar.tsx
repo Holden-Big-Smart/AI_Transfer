@@ -5,6 +5,7 @@ import {
   FolderKanban,
   Bot,
   NotebookPen,
+  MonitorPlay,
   ShieldCheck,
   UserCheck,
   Eye,
@@ -130,6 +131,22 @@ export default function Sidebar() {
             )}
           </NavLink>
 
+          <NavLink
+            to="/screen-share"
+            onClick={(e) => handleGuardedNav(e, '/screen-share')}
+            className={({ isActive }) =>
+              `flex flex-col items-center justify-center py-3 rounded-xl transition-all ${
+                isActive
+                  ? 'bg-blue-600/15 text-blue-400 font-medium'
+                  : 'text-gray-400 hover:bg-gray-800/60 hover:text-gray-200'
+              }`
+            }
+            title="实时屏幕共享（支持跨设备与访客观看）"
+          >
+            <MonitorPlay size={20} className="mb-1" />
+            <span className="text-[10px]">投屏</span>
+          </NavLink>
+
           {currentUser?.role === 'admin' && (
             <NavLink
               to="/users"
@@ -237,6 +254,19 @@ export default function Sidebar() {
           {hasUnsavedChanges && !noteAutoSave && (
             <span className="w-1.5 h-1.5 rounded-full bg-amber-400 absolute top-1 right-1.5" />
           )}
+        </NavLink>
+
+        <NavLink
+          to="/screen-share"
+          onClick={(e) => handleGuardedNav(e, '/screen-share')}
+          className={({ isActive }) =>
+            `flex flex-col items-center justify-center py-1 px-2.5 rounded-lg ${
+              isActive ? 'text-blue-400 font-semibold' : 'text-gray-400'
+            }`
+          }
+        >
+          <MonitorPlay size={18} />
+          <span className="text-[10px] mt-0.5">投屏</span>
         </NavLink>
 
         {currentUser?.role === 'admin' && (
