@@ -201,7 +201,9 @@ export default function ScreenShare() {
   useEffect(() => {
     if (!isGuest) {
       api.files.getShareableUsers().then(setShareableUsers).catch(() => {});
-      fetchRooms();
+      void Promise.resolve().then(() => {
+        void fetchRooms();
+      });
     }
   }, [isGuest, fetchRooms]);
 
@@ -698,17 +700,31 @@ export default function ScreenShare() {
             let height = 0;
             let fps = 0;
             let transport = '连接中';
-            const candidates = new Map<string, any>();
-            let selectedPair: any = null;
+            type RtcStatRecord = Record<string, unknown> & {
+              id?: string;
+              type?: string;
+              kind?: string;
+              frameWidth?: number;
+              frameHeight?: number;
+              framesPerSecond?: number;
+              state?: string;
+              nominated?: boolean;
+              localCandidateId?: string;
+              remoteCandidateId?: string;
+              candidateType?: string;
+              protocol?: string;
+            };
+            const candidates = new Map<string, RtcStatRecord>();
+            let selectedPair: RtcStatRecord | null = null;
 
             stats.forEach((rawReport) => {
-              const report = rawReport as any;
+              const report = rawReport as RtcStatRecord;
               if (report.type === 'inbound-rtp' && report.kind === 'video') {
-                width = report.frameWidth || width;
-                height = report.frameHeight || height;
-                fps = Math.round(report.framesPerSecond || 0);
+                width = Number(report.frameWidth || width);
+                height = Number(report.frameHeight || height);
+                fps = Math.round(Number(report.framesPerSecond || 0));
               } else if (report.type === 'local-candidate' || report.type === 'remote-candidate') {
-                candidates.set(report.id, report);
+                if (report.id) candidates.set(report.id, report);
               } else if (
                 report.type === 'candidate-pair' &&
                 (report.selected || report.nominated) &&
@@ -718,9 +734,10 @@ export default function ScreenShare() {
               }
             });
 
-            if (selectedPair) {
-              const localCand = candidates.get(selectedPair.localCandidateId);
-              const remoteCand = candidates.get(selectedPair.remoteCandidateId);
+            const pair = selectedPair as RtcStatRecord | null;
+            if (pair) {
+              const localCand = pair.localCandidateId ? candidates.get(pair.localCandidateId) : undefined;
+              const remoteCand = pair.remoteCandidateId ? candidates.get(pair.remoteCandidateId) : undefined;
               if (
                 localCand?.candidateType === 'relay' ||
                 remoteCand?.candidateType === 'relay'

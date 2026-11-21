@@ -144,15 +144,21 @@ function parseLegacyTextToBlocks(rawText: string): NoteSubBlock[] {
     : [{ id: `blk_${Date.now()}_0`, type: 'text', content: rawText, language: 'python', collapsed: false, title: '' }];
 }
 
-export function normalizeNoteItem(raw: any): NoteItem {
-  const rawPages: any[] = Array.isArray(raw.codePages) ? raw.codePages : [];
+export function normalizeNoteItem(raw: unknown): NoteItem {
+  const src = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const asString = (value: unknown, fallback = ''): string =>
+    typeof value === 'string' ? value : fallback;
+  const rawPages = Array.isArray(src.codePages)
+    ? (src.codePages as Array<Record<string, unknown>>)
+    : [];
   const normalizedPages: CodePage[] = [];
 
+  const content = asString(src.content);
   const hasNotePageAlready = rawPages.some((p) => p.pageType === 'note');
-  if (raw.content && raw.content.trim() && !hasNotePageAlready) {
-    const legacyBlocks = parseLegacyTextToBlocks(raw.content);
+  if (content.trim() && !hasNotePageAlready) {
+    const legacyBlocks = parseLegacyTextToBlocks(content);
     normalizedPages.push({
-      id: `np_legacy_${raw.id}`,
+      id: `np_legacy_${asString(src.id)}`,
       title: '笔记正文',
       pageType: 'note',
       language: 'markdown',
@@ -168,8 +174,8 @@ export function normalizeNoteItem(raw: any): NoteItem {
     const blocks: NoteSubBlock[] =
       pType === 'note'
         ? Array.isArray(p.blocks) && p.blocks.length > 0
-          ? p.blocks
-          : parseLegacyTextToBlocks(p.code || '')
+          ? (p.blocks as NoteSubBlock[])
+          : parseLegacyTextToBlocks(asString(p.code))
         : [];
 
     // 若已存在 richContent 字段则直接使用，否则从旧版 blocks 自动无损转换
@@ -181,11 +187,11 @@ export function normalizeNoteItem(raw: any): NoteItem {
         : undefined;
 
     normalizedPages.push({
-      id: p.id || `pg_${Date.now()}_${idx}`,
-      title: p.title || (pType === 'note' ? `笔记_${idx + 1}` : `片段_${idx + 1}.py`),
+      id: asString(p.id, `pg_${Date.now()}_${idx}`),
+      title: asString(p.title, pType === 'note' ? `笔记_${idx + 1}` : `片段_${idx + 1}.py`),
       pageType: pType,
-      language: p.language || 'python',
-      code: p.code || '',
+      language: asString(p.language, 'python'),
+      code: asString(p.code),
       blocks,
       richContent
     });
@@ -204,16 +210,16 @@ export function normalizeNoteItem(raw: any): NoteItem {
   }
 
   return {
-    id: raw.id,
-    folderId: raw.folderId ?? null,
-    title: raw.title || '未命名笔记',
+    id: asString(src.id),
+    folderId: typeof src.folderId === 'string' ? src.folderId : null,
+    title: asString(src.title, '未命名笔记'),
     content: '',
     codePages: normalizedPages,
-    isPublic: Boolean(raw.isPublic),
-    isOwner: raw.isOwner !== undefined ? Boolean(raw.isOwner) : true,
-    authorName: raw.authorName || '',
-    updatedAt: raw.updatedAt || '',
-    version: raw.version
+    isPublic: Boolean(src.isPublic),
+    isOwner: src.isOwner !== undefined ? Boolean(src.isOwner) : true,
+    authorName: asString(src.authorName),
+    updatedAt: asString(src.updatedAt),
+    version: typeof src.version === 'string' ? src.version : undefined
   };
 }
 
@@ -241,7 +247,7 @@ interface NoteStore {
   }) => Promise<NoteItem | null>;
   toggleNotePublic: (noteId: string, isPublic: boolean) => Promise<boolean>;
   deleteNote: (id: string) => Promise<void>;
-  importNotesBackup: (backupData: { folders?: Array<{ name: string }>; notes?: any[] }) => Promise<number>;
+  importNotesBackup: (backupData: { folders?: Array<{ name: string }>; notes?: unknown[] }) => Promise<number>;
   saveNoteFromAI: (title: string, textContent: string, codeSnippets?: string[]) => Promise<NoteItem | null>;
 
   // 全局未保存切换拦截守卫
@@ -480,9 +486,11 @@ export const useNoteStore = create<NoteStore>((set, get) => ({
     if (Array.isArray(backupData.notes)) {
       for (const rawNote of backupData.notes) {
         const normalized = normalizeNoteItem(rawNote);
+        const source = (rawNote && typeof rawNote === 'object' ? rawNote : {}) as Record<string, unknown>;
+        const folderName = typeof source.folderName === 'string' ? source.folderName : '';
         let targetFolderId = state.selectedFolderId;
-        if (rawNote.folderName && folderNameMap.has(rawNote.folderName)) {
-          targetFolderId = folderNameMap.get(rawNote.folderName) || null;
+        if (folderName && folderNameMap.has(folderName)) {
+          targetFolderId = folderNameMap.get(folderName) || null;
         }
         await api.notes.save({
           folder_id: targetFolderId,

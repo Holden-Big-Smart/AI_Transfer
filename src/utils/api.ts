@@ -45,12 +45,12 @@ export const api = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password })
-      }).then(handleResponse<{ access_token: string; user: any }>),
+      }).then(handleResponse<{ access_token: string; user: Record<string, unknown> }>),
 
     getMe: () =>
       fetch(`${API_BASE_URL}/api/auth/me`, {
         headers: getAuthHeaders()
-      }).then(handleResponse<any>),
+      }).then(handleResponse<Record<string, unknown>>),
 
     changePassword: (new_password: string) =>
       fetch(`${API_BASE_URL}/api/auth/change-password`, {
@@ -76,14 +76,14 @@ export const api = {
     getUsers: () =>
       fetch(`${API_BASE_URL}/api/auth/users`, {
         headers: getAuthHeaders()
-      }).then(handleResponse<any[]>),
+      }).then(handleResponse<Array<Record<string, unknown>>>),
 
     createUser: (username: string, name: string, allowed_projects: string[]) =>
       fetch(`${API_BASE_URL}/api/auth/users`, {
         method: 'POST',
         headers: getAuthHeaders(),
         body: JSON.stringify({ username, name, allowed_projects })
-      }).then(handleResponse<{ user: any; initialPassword: string }>),
+      }).then(handleResponse<{ user: Record<string, unknown>; initialPassword: string }>),
 
     deleteUser: (userId: string) =>
       fetch(`${API_BASE_URL}/api/auth/users/${userId}`, {
@@ -111,7 +111,7 @@ export const api = {
       const params = new URLSearchParams({ is_public: String(is_public), sub_path });
       return fetch(`${API_BASE_URL}/api/files/list?${params.toString()}`, {
         headers: getAuthHeaders()
-      }).then(handleResponse<any[]>);
+      }).then(handleResponse<Array<Record<string, unknown>>>);
     },
 
     createFolder: (name: string, parent_path: string, is_public: boolean) =>
@@ -285,7 +285,7 @@ export const api = {
       folder_id: string | null;
       title: string;
       content: string;
-      code_pages: any[];
+      code_pages: CodePage[];
       is_public?: boolean;
     }) => {
       try {
@@ -406,6 +406,6 @@ export const api = {
     getLogs: () =>
       fetch(`${API_BASE_URL}/api/audit/logs`, {
         headers: getAuthHeaders()
-      }).then(handleResponse<any[]>)
+      }).then(handleResponse<Array<Record<string, unknown>>>)
   }
 };

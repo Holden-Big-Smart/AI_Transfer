@@ -257,7 +257,9 @@ export default function UserManagement() {
   useEffect(() => {
     void fetchUsers().catch(() => {});
     if (isAdmin) {
-      loadOverview();
+      void Promise.resolve().then(() => {
+        void loadOverview();
+      });
     }
   }, [fetchUsers, isAdmin, loadOverview]);
 
@@ -267,7 +269,8 @@ export default function UserManagement() {
 
   useEffect(() => {
     if (!memUserId && users.length > 0) {
-      setMemUserId(String(users[0].id));
+      const firstId = String(users[0].id);
+      queueMicrotask(() => setMemUserId(firstId));
     }
   }, [users, memUserId]);
 
@@ -292,7 +295,11 @@ export default function UserManagement() {
   }, [isAdmin, govKeyword]);
 
   useEffect(() => {
-    if (isAdmin) loadGovernanceDetail('');
+    if (isAdmin) {
+      void Promise.resolve().then(() => {
+        void loadGovernanceDetail('');
+      });
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdmin]);
 
@@ -499,7 +506,11 @@ export default function UserManagement() {
   }, [memProject, isAdmin]);
 
   useEffect(() => {
-    if (isAdmin) handleLoadMemOverview();
+    if (isAdmin) {
+      void Promise.resolve().then(() => {
+        void handleLoadMemOverview();
+      });
+    }
   }, [isAdmin, handleLoadMemOverview]);
 
   const handleCleanupOrphans = async () => {

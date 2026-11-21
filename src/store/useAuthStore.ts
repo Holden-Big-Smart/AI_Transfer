@@ -461,7 +461,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
 
   fetchUsers: async () => {
     const list = await api.auth.getUsers();
-    set({ users: (list || []).map(normalizeUser) });
+    set({ users: (list || []).map((user) => normalizeUser(user as unknown as UserAccount)) });
   },
 
   syncCurrentUser: async () => {
@@ -469,7 +469,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     if (!state.currentUser || state.currentUser.role === 'guest') return;
     try {
       const me = await api.auth.getMe();
-      const normalized = normalizeUser(me);
+      const normalized = normalizeUser(me as unknown as UserAccount);
       localStorage.setItem('app_current_user', JSON.stringify(normalized));
       const nextTheme = sanitizeTheme(normalized.theme || state.theme);
       applyThemeToDom(nextTheme, get().themes);
@@ -627,7 +627,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     try {
       const res = await api.auth.login(username, password);
       localStorage.setItem('access_token', res.access_token);
-      const normalized = normalizeUser(res.user);
+      const normalized = normalizeUser(res.user as unknown as UserAccount);
       localStorage.setItem('app_current_user', JSON.stringify(normalized));
       const nextTheme = sanitizeTheme(normalized.theme || 'dark');
       applyThemeToDom(nextTheme, get().themes);
@@ -667,9 +667,9 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
   },
 
   createUser: async (username: string, name: string, allowedProjects: string[]) => {
-    const created = await api.auth.createUser(username, name, allowedProjects) as any;
-    const normalized = normalizeUser(created.user || created);
-    const initialPass = created.initialPass || created.initial_pass || created.initialPassword || '';
+    const created = (await api.auth.createUser(username, name, allowedProjects)) as Record<string, unknown>;
+    const normalized = normalizeUser((created.user || created) as UserAccount);
+    const initialPass = String(created.initialPass || created.initial_pass || created.initialPassword || '');
     set((state) => ({ users: [...state.users, normalized] }));
     return { user: normalized, initialPass };
   },

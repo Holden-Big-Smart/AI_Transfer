@@ -121,13 +121,8 @@ function AssistantBubble({
   onDownload: (relPath: string, fileName: string) => void;
 }) {
   const { thinking, answer, isThinkingOpenDefault } = splitThinkingContent(content);
-  const [expanded, setExpanded] = useState<boolean>(isThinkingOpenDefault);
-
-  useEffect(() => {
-    if (isThinkingOpenDefault) {
-      setExpanded(true);
-    }
-  }, [isThinkingOpenDefault]);
+  const [manualExpanded, setManualExpanded] = useState<boolean | null>(null);
+  const expanded = manualExpanded !== null ? manualExpanded : isThinkingOpenDefault;
 
   return (
     <div className="max-w-[82%] rounded-2xl px-4 py-3 text-xs leading-relaxed whitespace-pre-wrap shadow-sm bg-[#252932] border border-gray-700/80 text-gray-200 space-y-2.5">
@@ -135,7 +130,7 @@ function AssistantBubble({
         <div className="rounded-xl bg-[#1b1e26] border border-indigo-500/30 overflow-hidden">
           <button
             type="button"
-            onClick={() => setExpanded((prev) => !prev)}
+            onClick={() => setManualExpanded(!expanded)}
             className="w-full px-3 py-2 flex items-center justify-between text-[11px] text-indigo-300 hover:bg-indigo-500/10 transition-colors"
           >
             <span className="inline-flex items-center gap-1.5 font-medium">
@@ -240,7 +235,8 @@ export default function AICopilot() {
 
   useEffect(() => {
     if (!allowedProjects.includes(selectedProject)) {
-      setSelectedProject(allowedProjects[0]);
+      const fallbackProj = allowedProjects[0];
+      queueMicrotask(() => setSelectedProject(fallbackProj));
     }
   }, [allowedProjects, selectedProject]);
 
@@ -306,13 +302,13 @@ export default function AICopilot() {
         : Array.isArray(data.items)
         ? data.items
         : [];
-      const list: MemoryItem[] = rawList.map((m: any) => ({
+      const list: MemoryItem[] = rawList.map((m: Record<string, unknown>) => ({
         filename: String(m.filename || m.file_name || m.name || ''),
         title: String(m.title || m.filename || m.file_name || m.name || '未命名记忆'),
         preview: String(m.preview || m.content || '').slice(0, 160),
         content: String(m.content || ''),
         size: Number(m.size || 0),
-        updatedAt: m.updatedAt || m.updated_at || undefined
+        updatedAt: typeof m.updatedAt === 'string' ? m.updatedAt : typeof m.updated_at === 'string' ? m.updated_at : undefined
       }));
       setMemories(list);
     } catch {
@@ -388,11 +384,15 @@ export default function AICopilot() {
   }, [selectedProject, activeSessionId, loadMessages]);
 
   useEffect(() => {
-    checkComputeStatus();
-    loadSessions();
-    loadKbTree();
-    loadMemories();
-    const timer = window.setInterval(checkComputeStatus, 15000);
+    void Promise.resolve().then(() => {
+      void checkComputeStatus();
+      void loadSessions();
+      void loadKbTree();
+      void loadMemories();
+    });
+    const timer = window.setInterval(() => {
+      void checkComputeStatus();
+    }, 15000);
     return () => window.clearInterval(timer);
   }, [selectedProject, checkComputeStatus, loadSessions, loadKbTree, loadMemories]);
 

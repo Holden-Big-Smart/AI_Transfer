@@ -207,7 +207,7 @@ export const useFileStore = create<FileStore>((set, get) => ({
 
   loadServerFiles: async (isPublic, subPath = '') => {
     try {
-      const serverNodes = await api.files.list(isPublic, subPath);
+      const serverNodes = (await api.files.list(isPublic, subPath)) as unknown as FileNode[];
       set((state) => {
         const targetParentId = subPath
           ? isPublic
@@ -229,11 +229,12 @@ export const useFileStore = create<FileStore>((set, get) => ({
   loadAuditLogs: async () => {
     try {
       const logs = await api.audit.getLogs();
-      const mapped = logs.map((l: Record<string, never> & {
+      const typedLogs = logs as unknown as Array<{
         id: string; timestamp: string; operator_name: string;
         operator_username: string; action: OperationLog['action'];
         target_name: string; details?: string;
-      }) => ({
+      }>;
+      const mapped = typedLogs.map((l) => ({
         id: l.id,
         time: l.timestamp,
         operatorName: l.operator_name,

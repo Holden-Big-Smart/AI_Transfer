@@ -133,6 +133,7 @@ export default function AdminThemeModal({ open, onClose, initialThemeId }: Admin
   const [saving, setSaving] = useState<boolean>(false);
   const [msg, setMsg] = useState<string>('');
   const [logoPickerOpen, setLogoPickerOpen] = useState(false);
+  const [logoPickerPos, setLogoPickerPos] = useState<{ top: number; left: number } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const logoButtonRef = useRef<HTMLButtonElement>(null);
   const logoPickerRef = useRef<HTMLDivElement>(null);
@@ -165,16 +166,28 @@ export default function AdminThemeModal({ open, onClose, initialThemeId }: Admin
   }, []);
 
   useEffect(() => {
-    if (open) {
-      fetchThemes();
-      setMsg('');
-    }
+    if (!open) return;
+    let active = true;
+    Promise.resolve().then(() => {
+      if (active) setMsg('');
+    });
+    void fetchThemes();
+    return () => {
+      active = false;
+    };
   }, [open, fetchThemes]);
 
   useEffect(() => {
     if (!open || !initialThemeId || currentUser?.role !== 'admin') return;
     const target = themes.find((item) => item.id === initialThemeId);
-    if (target) selectThemeForEdit(target);
+    if (!target) return;
+    let active = true;
+    Promise.resolve().then(() => {
+      if (active) selectThemeForEdit(target);
+    });
+    return () => {
+      active = false;
+    };
   }, [open, initialThemeId, themes, currentUser?.role, selectThemeForEdit]);
 
   useEffect(() => {
@@ -266,7 +279,6 @@ export default function AdminThemeModal({ open, onClose, initialThemeId }: Admin
 
   const builtins = themes.filter((item) => item.isBuiltin);
   const customs = themes.filter((item) => !item.isBuiltin);
-  const logoRect = logoButtonRef.current?.getBoundingClientRect();
 
   const renderThemeItem = (t: CustomThemeItem) => (
     <div
@@ -385,7 +397,11 @@ export default function AdminThemeModal({ open, onClose, initialThemeId }: Admin
                 ref={logoButtonRef}
                 type="button"
                 disabled={controlsDisabled}
-                onClick={() => setLogoPickerOpen((prev) => !prev)}
+                onClick={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  setLogoPickerPos({ top: rect.bottom + 6, left: rect.left });
+                  setLogoPickerOpen((prev) => !prev);
+                }}
                 title="点击选择 Logo 图标"
                 className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 disabled:cursor-default"
                 style={{ backgroundColor: draft.logo.bg, color: draft.logo.fg }}
@@ -491,13 +507,13 @@ export default function AdminThemeModal({ open, onClose, initialThemeId }: Admin
           </button>
         </div>
 
-        {logoPickerOpen && logoRect && (
+        {logoPickerOpen && logoPickerPos && (
           <div
             ref={logoPickerRef}
             className="fixed z-[60] w-64 rounded-xl border border-gray-600 bg-[#1a1d24] p-2 shadow-2xl"
             style={{
-              top: Math.min(logoRect.bottom + 6, window.innerHeight - 210),
-              left: Math.min(logoRect.left, window.innerWidth - 272),
+              top: Math.min(logoPickerPos.top, window.innerHeight - 210),
+              left: Math.min(logoPickerPos.left, window.innerWidth - 272),
             }}
           >
             <div className="px-1 pb-2 text-[11px] text-gray-400">Logo 图标库（12 款）</div>

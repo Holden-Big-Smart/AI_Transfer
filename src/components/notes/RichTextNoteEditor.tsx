@@ -79,6 +79,7 @@ export default function RichTextNoteEditor({
 }: RichTextNoteEditorProps) {
   const imageInputRef = useRef<HTMLInputElement>(null);
   const lastEmittedRef = useRef<string>(content);
+  const pasteSeqRef = useRef(0);
   const [isUploadingImg, setIsUploadingImg] = useState(false);
   const [openPicker, setOpenPicker] = useState<'color' | 'highlight' | null>(null);
 
@@ -86,9 +87,11 @@ export default function RichTextNoteEditor({
     if (!editor || !editable) return;
     setIsUploadingImg(true);
     try {
+      pasteSeqRef.current += 1;
+      const fallbackName = `paste_${pasteSeqRef.current}.png`;
       const res = await api.notes.uploadImage(
         file,
-        file instanceof File ? file.name : `paste_${Date.now()}.png`
+        file instanceof File ? file.name : fallbackName
       );
       editor
         .chain()

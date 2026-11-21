@@ -451,19 +451,21 @@ export default function Notes() {
       skipNextActiveNoteHydrateRef.current = false;
       return;
     }
-    if (activeNote) {
-      setTitle(activeNote.title);
-      setCodePages(activeNote.codePages || []);
-      setIsPublic(Boolean(activeNote.isPublic));
-      setActiveTabIdx((prev) => (prev < (activeNote.codePages?.length || 1) ? prev : 0));
-      setIsDirty(false);
-    } else {
-      setTitle('');
-      setCodePages([]);
-      setIsPublic(false);
-      setActiveTabIdx(0);
-      setIsDirty(false);
-    }
+    queueMicrotask(() => {
+      if (activeNote) {
+        setTitle(activeNote.title);
+        setCodePages(activeNote.codePages || []);
+        setIsPublic(Boolean(activeNote.isPublic));
+        setActiveTabIdx((prev) => (prev < (activeNote.codePages?.length || 1) ? prev : 0));
+        setIsDirty(false);
+      } else {
+        setTitle('');
+        setCodePages([]);
+        setIsPublic(false);
+        setActiveTabIdx(0);
+        setIsDirty(false);
+      }
+    });
   }, [activeNote]);
 
   // 始终保留最新草稿快照供快捷键、离页守卫与自动保存读取
@@ -478,16 +480,18 @@ export default function Notes() {
     noteAutoSave
   });
 
-  latestDraftRef.current = {
-    activeNoteId,
-    folderId: activeNote ? activeNote.folderId : selectedFolderId,
-    title,
-    codePages,
-    isPublic,
-    isDirty,
-    canEditActiveNote,
-    noteAutoSave
-  };
+  useEffect(() => {
+    latestDraftRef.current = {
+      activeNoteId,
+      folderId: activeNote ? activeNote.folderId : selectedFolderId,
+      title,
+      codePages,
+      isPublic,
+      isDirty,
+      canEditActiveNote,
+      noteAutoSave
+    };
+  });
 
   // 核心保存函数（支持手动保存与静默自动保存）
   const saveCurrentDraft = async (silent = false): Promise<boolean> => {
@@ -532,7 +536,9 @@ export default function Notes() {
   };
 
   const saveFnRef = useRef(saveCurrentDraft);
-  saveFnRef.current = saveCurrentDraft;
+  useEffect(() => {
+    saveFnRef.current = saveCurrentDraft;
+  });
 
   // 向全局 store 注册当前页面的“保存”与“放弃修改”处理器
   useEffect(() => {
@@ -723,10 +729,11 @@ export default function Notes() {
   const handleAddPageToFront = (pageType: 'note' | 'code') => {
     if (!canEditActiveNote) return;
     const sameTypeCount = codePages.filter((p) => p.pageType === pageType).length + 1;
+    const nextPageId = `pg_${pageType}_${codePages.length + 1}_${sameTypeCount}`;
     const newPage: CodePage =
       pageType === 'note'
         ? {
-            id: `pg_${Date.now()}`,
+            id: nextPageId,
             title: `笔记_${sameTypeCount}`,
             pageType: 'note',
             language: 'python',
@@ -735,7 +742,7 @@ export default function Notes() {
             richContent: '<p></p>'
           }
         : {
-            id: `pg_${Date.now()}`,
+            id: nextPageId,
             title: `片段_${sameTypeCount}.py`,
             pageType: 'code',
             language: 'python',
