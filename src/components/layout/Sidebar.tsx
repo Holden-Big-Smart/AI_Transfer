@@ -9,23 +9,20 @@ import {
   Users,
   KeyRound,
   LogOut,
-  Moon,
-  Sun,
-  Leaf,
   Check
 } from 'lucide-react';
-import { useAuthStore, type ThemeMode } from '../../store/useAuthStore';
+import {
+  useAuthStore,
+  LOGO_ICON_COMPONENTS,
+  getThemeLogo,
+  type CustomThemeItem,
+  type LogoIcon,
+} from '../../store/useAuthStore';
 import { useNoteStore } from '../../store/useNoteStore';
 import AvatarModal from '../AvatarModal';
 
-const THEME_OPTIONS: Array<{ value: ThemeMode; label: string; desc: string }> = [
-  { value: 'dark', label: '暗色风格', desc: '深邃护眼默认主题' },
-  { value: 'light', label: '亮色风格', desc: '清爽高亮日间办公' },
-  { value: 'eyecare', label: '护眼风格', desc: '柔和暖纸长时阅读' }
-];
-
 export default function Sidebar() {
-  const { currentUser, theme, customThemes, fetchThemes, noteAutoSave, setTheme, logout } = useAuthStore();
+  const { currentUser, theme, themes, fetchThemes, noteAutoSave, setTheme, logout } = useAuthStore();
   const { hasUnsavedChanges, requestProtectedAction } = useNoteStore();
   const navigate = useNavigate();
   const location = useLocation();
@@ -67,18 +64,41 @@ export default function Sidebar() {
     }
   };
 
-  const renderThemeIcon = (mode: ThemeMode, size = 16) => {
-    if (mode === 'light') return <Sun size={size} className="text-amber-400" />;
-    if (mode === 'eyecare') return <Leaf size={size} className="text-emerald-400" />;
-    return <Moon size={size} className="text-blue-400" />;
+  const renderThemeLogo = (item: CustomThemeItem | undefined, size = 16) => {
+    const icon: LogoIcon = getThemeLogo(item).icon;
+    if (icon === 'ring') {
+      const side = Math.max(10, size - 1);
+      return (
+        <span
+          className="rounded-full inline-block shrink-0"
+          style={{
+            width: `${side}px`,
+            height: `${side}px`,
+            border: '2px solid currentColor',
+            backgroundColor: 'transparent',
+          }}
+        />
+      );
+    }
+    const Icon = LOGO_ICON_COMPONENTS[icon] || LOGO_ICON_COMPONENTS.sparkle;
+    return <Icon size={size} />;
   };
+
+  const activeTheme = themes.find((item) => item.id === theme);
+  const visibleThemes = themes.filter((item) => item.activeInMenu !== false);
 
   return (
     <div ref={menuContainerRef} className="contents">
       {/* 桌面端左侧纵向导航栏 */}
       <aside className="hidden md:flex w-16 bg-[#16181d] border-r border-gray-800 flex-col items-center py-5 select-none shrink-0 z-30 relative">
-        <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center font-black text-white text-base shadow-lg shadow-blue-500/20 mb-8">
-          AI
+        <div
+          style={{
+            backgroundColor: getThemeLogo(activeTheme).bg,
+            color: getThemeLogo(activeTheme).fg,
+          }}
+          className="w-10 h-10 rounded-xl flex items-center justify-center font-black text-base shadow-lg shadow-blue-500/20 mb-8"
+        >
+          {renderThemeLogo(activeTheme, 20)}
         </div>
 
         <nav className="flex flex-col gap-4 flex-1 w-full px-2">
@@ -168,7 +188,7 @@ export default function Sidebar() {
               title="成员与权限管理"
             >
               <Users size={20} className="mb-1" />
-              <span className="text-[10px]">成员</span>
+              <span className="text-[10px]">管理</span>
             </NavLink>
           )}
         </nav>
@@ -181,7 +201,7 @@ export default function Sidebar() {
             style={{ backgroundColor: "var(--bg-hover)", borderColor: "var(--border-main)" }} className="w-10 h-10 rounded-xl border hover:opacity-85 flex items-center justify-center transition-colors"
             title="界面主题"
           >
-            {renderThemeIcon(theme, 17)}
+            {renderThemeLogo(activeTheme, 17)}
           </button>
 
           {currentUser?.role !== 'guest' && (
@@ -247,49 +267,14 @@ export default function Sidebar() {
             >
               界面外观主题
             </div>
-            {THEME_OPTIONS.map((opt) => {
-              const active = theme === opt.value;
+            {visibleThemes.map((item) => {
+              const active = theme === item.id;
               return (
                 <button
-                  key={opt.value}
+                  key={item.id}
                   type="button"
                   onClick={() => {
-                    setTheme(opt.value);
-                    setIsThemeMenuOpen(false);
-                  }}
-                  style={
-                    active
-                      ? {
-                          backgroundColor: 'var(--bg-hover)',
-                          color: 'var(--text-primary)',
-                        }
-                      : {
-                          color: 'var(--text-secondary)',
-                        }
-                  }
-                  className="w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-left transition-colors hover:opacity-90"
-                >
-                  <div className="flex items-center gap-2.5">
-                    {renderThemeIcon(opt.value, 15)}
-                    <div>
-                      <div className="text-xs font-medium">{opt.label}</div>
-                      <div style={{ color: 'var(--text-muted)' }} className="text-[10px]">
-                        {opt.desc}
-                      </div>
-                    </div>
-                  </div>
-                  {active && <Check size={14} className="text-blue-500" />}
-                </button>
-              );
-            })}
-            {customThemes.map((ct) => {
-              const active = theme === ct.id;
-              return (
-                <button
-                  key={ct.id}
-                  type="button"
-                  onClick={() => {
-                    setTheme(ct.id);
+                    void setTheme(item.id);
                     setIsThemeMenuOpen(false);
                   }}
                   style={
@@ -297,20 +282,22 @@ export default function Sidebar() {
                       ? { backgroundColor: 'var(--bg-hover)', color: 'var(--text-primary)' }
                       : { color: 'var(--text-secondary)' }
                   }
-                  className="w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-left transition-colors"
+                  className="w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-left transition-colors hover:opacity-90"
                 >
                   <div className="flex items-center gap-2.5 min-w-0">
                     <span
-                      className="w-3.5 h-3.5 rounded-full border shrink-0"
+                      className="w-6 h-6 rounded-md flex items-center justify-center shrink-0"
                       style={{
-                        backgroundColor: ct.colors['--bg-surface'] || '#3b82f6',
-                        borderColor: ct.colors['--text-primary'] || '#9ca3af',
+                        backgroundColor: getThemeLogo(item).bg,
+                        color: getThemeLogo(item).fg,
                       }}
-                    />
+                    >
+                      {renderThemeLogo(item, 13)}
+                    </span>
                     <div className="truncate">
-                      <div className="text-xs font-medium truncate">{ct.name}</div>
+                      <div className="text-xs font-medium truncate">{item.name}</div>
                       <div style={{ color: 'var(--text-muted)' }} className="text-[10px] truncate">
-                        {ct.description || '自定义全局风格'}
+                        {item.description || (item.isBuiltin ? '内置主题方案' : '自定义全局风格')}
                       </div>
                     </div>
                   </div>
@@ -318,6 +305,9 @@ export default function Sidebar() {
                 </button>
               );
             })}
+            {visibleThemes.length === 0 && (
+              <div className="px-2.5 py-3 text-[11px] text-gray-400">暂无已激活的主题方案</div>
+            )}
           </div>
         )}
       </aside>

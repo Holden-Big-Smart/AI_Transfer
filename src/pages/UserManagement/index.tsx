@@ -1,427 +1,1602 @@
-﻿// src/pages/UserManagement/index.tsx
-import { useState, useEffect } from 'react';
+﻿import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
-  Users, UserPlus, Trash2, KeyRound, Copy, Check,
-  ShieldCheck, X, CheckSquare, Square, SlidersHorizontal, Palette
+  Users,
+  FolderKanban,
+  Cpu,
+  ShieldCheck,
+  Palette,
+  Plus,
+  Trash2,
+  SlidersHorizontal,
+  RefreshCw,
+  Search,
+  Archive,
+  X,
+  Copy,
+  Check,
+  Download,
+  Upload,
+  Pencil,
+  Lock,
+  type LucideIcon,
 } from 'lucide-react';
-import { useAuthStore, type UserAccount } from '../../store/useAuthStore';
+import {
+  useAuthStore,
+  THEME_COLOR_FIELDS,
+  LOGO_ICONS,
+  LOGO_ICON_LABELS,
+  LOGO_ICON_COMPONENTS,
+  getThemeLogo,
+  isLogoIcon,
+  type CustomThemeItem,
+  type LogoIcon,
+  type ThemeLogo,
+  type UserAccount,
+} from '../../store/useAuthStore';
 import AdminThemeModal from '../../components/AdminThemeModal';
 
-const BASE_PROJECTS = ['通用公用库', 'Cyber_EcoTank', 'RPA模块分析'];
+type GovTab = 'members' | 'projects' | 'compute' | 'governance' | 'themes';
+
+interface GovernanceOverview {
+  db: {
+    usersCount: number;
+    notesCount: number;
+    auditLogsCount: number;
+    recentAudits: Array<{
+      id?: number;
+      username?: string;
+      action?: string;
+      target?: string;
+      detail?: string;
+      created_at?: string;
+    }>;
+  };
+  agent: {
+    online: boolean;
+    agentUrl: string;
+    projects: Array<string | { name?: string; chunks?: number; files?: number }>;
+    detail: unknown;
+  };
+}
+
+interface GovernanceFileItem {
+  path: string;
+  size: number;
+  updatedAt?: number;
+}
+
+interface GovernanceNoteItem {
+  id: number | string;
+  title: string;
+  owner?: string;
+  updatedAt?: string;
+}
+
+interface GovernanceDetailData {
+  storage: {
+    root: string;
+    totalFiles: number;
+    totalBytes: number;
+    topFiles: GovernanceFileItem[];
+  };
+  notes: GovernanceNoteItem[];
+  audits: Array<{
+    id?: number;
+    username?: string;
+    action?: string;
+    target?: string;
+    detail?: string;
+    created_at?: string;
+  }>;
+}
+
+interface MemoryUserSummary {
+  userDir: string;
+  memoryCount: number;
+  latestUpdatedAt: string;
+}
+
+interface InspectedMemory {
+  filename: string;
+  title: string;
+  preview: string;
+  content?: string;
+  updatedAt?: string;
+}
+
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
+
+function formatFriendlyMsg(raw: unknown, fallback: string): string {
+  const s = String(raw || '').trim();
+  if (!s) return fallback;
+  if (s.startsWith('{') && s.includes('detail')) {
+    try {
+      const obj = JSON.parse(s);
+      if (obj && typeof obj.detail === 'string') {
+        return obj.detail === 'Not Found' ? fallback : obj.detail;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return s === 'Not Found' ? fallback : s;
+}
+
+function getAuthHeaders(): Record<string, string> {
+  const token = localStorage.getItem('access_token');
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+const THEME_LOGO_FIELDS = [
+  { key: 'fg' as const, label: '图案色' },
+  { key: 'bg' as const, label: '底色' },
+] as const;
+
+function renderThemeLogo(item: CustomThemeItem | undefined, size = 12) {
+  const logo = getThemeLogo(item);
+  if (logo.icon === 'ring') {
+    const side = Math.max(10, size - 1);
+    return (
+      <span
+        className="rounded-full inline-block shrink-0"
+        style={{
+          width: `${side}px`,
+          height: `${side}px`,
+          border: '2px solid currentColor',
+          backgroundColor: 'transparent',
+        }}
+      />
+    );
+  }
+  const Icon = LOGO_ICON_COMPONENTS[logo.icon] || LOGO_ICON_COMPONENTS.sparkle;
+  return <Icon size={size} />;
+}
+
+function toColorInputValue(value: unknown): string {
+  const raw = String(value || '').trim().toLowerCase();
+  if (/^#[0-9a-f]{6}$/.test(raw)) return raw;
+  if (/^#[0-9a-f]{3}$/.test(raw)) {
+    return `#${raw[1]}${raw[1]}${raw[2]}${raw[2]}${raw[3]}${raw[3]}`;
+  }
+  return '#334155';
+}
 
 export default function UserManagement() {
-  const { users, currentUser, createUser, deleteUser, fetchUsers, updateUserProjects } = useAuthStore();
+  const {
+    users,
+    currentUser,
+    theme,
+    themes,
+    createUser,
+    deleteUser,
+    fetchUsers,
+    updateUserProjects,
+    fetchThemes,
+    setTheme,
+    toggleThemeInMenu,
+    importCustomTheme,
+    updateCustomTheme,
+    deleteCustomTheme,
+  } = useAuthStore();
 
-  const [availableProjects, setAvailableProjects] = useState<string[]>(BASE_PROJECTS);
-  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const isAdmin = currentUser?.role === 'admin';
+  const uniqueThemes = useMemo(() => {
+    const seen = new Set<string>();
+    return themes.filter((item) => {
+      if (!item || typeof item.id !== 'string' || !item.id.trim() || seen.has(item.id)) return false;
+      seen.add(item.id);
+      return true;
+    });
+  }, [themes]);
+  const [activeTab, setActiveTab] = useState<GovTab>('members');
+
+  const [createOpen, setCreateOpen] = useState(false);
   const [newUsername, setNewUsername] = useState('');
   const [newName, setNewName] = useState('');
-  const [selectedProjects, setSelectedProjects] = useState<string[]>(['通用公用库']);
-
+  const [creating, setCreating] = useState(false);
   const [generatedResult, setGeneratedResult] = useState<{ username: string; pass: string } | null>(null);
   const [hasCopied, setHasCopied] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<UserAccount | null>(null);
-  const [themeModalOpen, setThemeModalOpen] = useState(false);
+  const [permTarget, setPermTarget] = useState<UserAccount | null>(null);
+  const [selectedProjects, setSelectedProjects] = useState<string[]>([]);
+  const [savingPerm, setSavingPerm] = useState(false);
 
-  // 调整成员项目权限弹窗状态
-  const [editingUser, setEditingUser] = useState<UserAccount | null>(null);
-  const [editingProjects, setEditingProjects] = useState<string[]>([]);
-  const [isSavingProjects, setIsSavingProjects] = useState(false);
+  const [newProjectName, setNewProjectName] = useState('');
+  const [projectBusy, setProjectBusy] = useState(false);
+
+  const [overview, setOverview] = useState<GovernanceOverview | null>(null);
+  const [loadingOverview, setLoadingOverview] = useState(false);
+  const [memProject, setMemProject] = useState('通用公用库');
+  const [memUserId, setMemUserId] = useState('');
+  const [inspectedMemories, setInspectedMemories] = useState<InspectedMemory[]>([]);
+  const [loadingMem, setLoadingMem] = useState(false);
+  const [memOverview, setMemOverview] = useState<MemoryUserSummary[]>([]);
+  const [selectedMemContent, setSelectedMemContent] = useState<{ title: string; content: string } | null>(null);
+
+  const [themeModalOpen, setThemeModalOpen] = useState(false);
+  const [themeEditTarget, setThemeEditTarget] = useState<string | null>(null);
+  const [themeImportOpen, setThemeImportOpen] = useState(false);
+  const [themeImportText, setThemeImportText] = useState('');
+  const [themeBusy, setThemeBusy] = useState(false);
+  const [logoPicker, setLogoPicker] = useState<{ id: string; top: number; left: number } | null>(null);
+  const themeFileInputRef = useRef<HTMLInputElement>(null);
+  const [feedback, setFeedback] = useState('');
+  const [govKeyword, setGovKeyword] = useState('');
+  const [govDetail, setGovDetail] = useState<GovernanceDetailData | null>(null);
+  const [govBusy, setGovBusy] = useState(false);
+
+  const availableProjects: string[] = Array.from(
+    new Set([
+      '通用公用库',
+      ...(currentUser?.allowedProjects || []),
+      ...users.flatMap((u) => u.allowedProjects || []),
+      ...((overview?.agent?.projects || [])
+        .map((p) => (typeof p === 'string' ? p : p?.name || ''))
+        .filter(Boolean)),
+    ])
+  );
+
+  const loadOverview = useCallback(async () => {
+    if (!isAdmin) return;
+    setLoadingOverview(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/overview`, {
+        headers: getAuthHeaders(),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setOverview(data);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setLoadingOverview(false);
+    }
+  }, [isAdmin]);
 
   useEffect(() => {
-    if (currentUser?.role === 'admin') {
-      fetchUsers();
-      const token = localStorage.getItem('access_token');
-      fetch('/api/ai/projects', {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      })
-        .then((r) => (r.ok ? r.json() : null))
-        .then((data) => {
-          const merged = new Set<string>(['通用公用库']);
-          for (const p of BASE_PROJECTS) merged.add(p);
-          if (Array.isArray(data?.projects)) {
-            for (const p of data.projects) merged.add(String(p));
-          }
-          for (const u of users || []) {
-            for (const p of u.allowedProjects || []) merged.add(String(p));
-          }
-          setAvailableProjects(Array.from(merged));
-        })
-        .catch(() => {});
+    void fetchUsers().catch(() => {});
+    if (isAdmin) {
+      loadOverview();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUser?.role, users.length]);
+  }, [fetchUsers, isAdmin, loadOverview]);
 
-  if (currentUser?.role !== 'admin') {
-    return (
-      <div className="h-full flex items-center justify-center text-gray-500 text-xs">
-        无权访问用户管理中心
-      </div>
-    );
-  }
+  useEffect(() => {
+    if (activeTab === 'themes' && isAdmin) void fetchThemes().catch(() => {});
+  }, [activeTab, isAdmin, fetchThemes]);
 
-  const handleCreateSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newUsername.trim()) return;
-    const finalProjects = selectedProjects.length > 0 ? selectedProjects : ['通用公用库'];
+  useEffect(() => {
+    if (!memUserId && users.length > 0) {
+      setMemUserId(String(users[0].id));
+    }
+  }, [users, memUserId]);
+
+  const loadGovernanceDetail = useCallback(async (kw?: string) => {
+    if (!isAdmin) return;
+    setGovBusy(true);
     try {
-      const res = await createUser(newUsername.trim(), newName.trim(), finalProjects);
-      setIsAddModalOpen(false);
-      setGeneratedResult({ username: newUsername.trim(), pass: res.initialPass });
-      setNewUsername('');
-      setNewName('');
-      setSelectedProjects(['通用公用库']);
-    } catch (err) {
-      alert(`创建用户失败: ${err instanceof Error ? err.message : '未知错误'}`);
+      const qVal = kw !== undefined ? kw : govKeyword;
+      const res = await fetch(
+        `${API_BASE_URL}/api/admin/governance/detail?q=${encodeURIComponent(qVal)}`,
+        { headers: getAuthHeaders() }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        setGovDetail(data);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setGovBusy(false);
+    }
+  }, [isAdmin, govKeyword]);
+
+  useEffect(() => {
+    if (isAdmin) loadGovernanceDetail('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin]);
+
+  const handleDeleteGovFile = async (relPath: string) => {
+    setGovBusy(true);
+    setFeedback('');
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/governance/files/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ path: relPath }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setFeedback(`已清理存储文件：${relPath}`);
+        await loadGovernanceDetail();
+      } else {
+        setFeedback(data.detail || '清理文件失败');
+      }
+    } catch {
+      setFeedback('清理文件网络异常');
+    } finally {
+      setGovBusy(false);
     }
   };
 
-  const handleConfirmDelete = async () => {
+  const handleDeleteGovNote = async (noteId: number | string, title: string) => {
+    setGovBusy(true);
+    setFeedback('');
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/governance/notes/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ id: noteId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setFeedback(`已删除笔记「${title}」`);
+        await loadOverview();
+        await loadGovernanceDetail();
+      } else {
+        setFeedback(data.detail || '删除笔记失败');
+      }
+    } catch {
+      setFeedback('删除笔记网络异常');
+    } finally {
+      setGovBusy(false);
+    }
+  };
+
+  const handlePruneAudits = async () => {
+    setGovBusy(true);
+    setFeedback('');
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/governance/audits/prune`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ keepLatest: 200 }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setFeedback(`已清理 ${data.removedCount ?? 0} 条历史审计日志（保留最新 200 条）`);
+        await loadOverview();
+        await loadGovernanceDetail();
+      } else {
+        setFeedback(data.detail || '清理审计日志失败');
+      }
+    } catch {
+      setFeedback('清理审计日志网络异常');
+    } finally {
+      setGovBusy(false);
+    }
+  };
+
+  const handleCreateUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newUsername.trim()) return;
+    setCreating(true);
+    setFeedback('');
+    try {
+      const result = await createUser(
+        newUsername.trim(),
+        newName.trim() || newUsername.trim(),
+        ['通用公用库']
+      );
+      setGeneratedResult({ username: newUsername.trim(), pass: result.initialPass });
+      setNewUsername('');
+      setNewName('');
+      setCreateOpen(false);
+      setFeedback('已创建成员账号，请复制初始密码');
+      await fetchUsers();
+    } catch (err) {
+      setFeedback(err instanceof Error ? err.message : '创建账号失败');
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const copyCredentials = () => {
+    if (!generatedResult) return;
+    navigator.clipboard.writeText(
+      `账号: ${generatedResult.username}\n初始随机密码: ${generatedResult.pass}\n请登录系统后根据提示自行修改密码。`
+    );
+    setHasCopied(true);
+    window.setTimeout(() => setHasCopied(false), 2000);
+  };
+
+  const openPermModal = (u: UserAccount) => {
+    setPermTarget(u);
+    setSelectedProjects(u.allowedProjects || ['通用公用库']);
+  };
+
+  const toggleProject = (proj: string) => {
+    setSelectedProjects((prev) =>
+      prev.includes(proj) ? prev.filter((item) => item !== proj) : [...prev, proj]
+    );
+  };
+
+  const handleSavePermissions = async () => {
+    if (!permTarget) return;
+    setSavingPerm(true);
+    setFeedback('');
+    try {
+      await updateUserProjects(permTarget.id, selectedProjects);
+      setPermTarget(null);
+      setFeedback(`已更新「${permTarget.name || permTarget.username}」的知识库项目授权`);
+    } catch (err) {
+      setFeedback(err instanceof Error ? err.message : '保存权限失败');
+    } finally {
+      setSavingPerm(false);
+    }
+  };
+
+  const handleCreateProject = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const clean = newProjectName.trim();
+    if (!clean) return;
+    setProjectBusy(true);
+    setFeedback('');
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/ai/projects/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ project_name: clean }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setFeedback(data.detail || '新建项目失败');
+      } else {
+        setNewProjectName('');
+        setFeedback(`已新建知识库项目「${clean}」`);
+        await fetchUsers();
+        await loadOverview();
+      }
+    } catch {
+      setFeedback('新建项目请求异常');
+    } finally {
+      setProjectBusy(false);
+    }
+  };
+
+  const handleDeleteProject = async (projName: string) => {
+    if (projName === '通用公用库') return;
+    setProjectBusy(true);
+    setFeedback('');
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/ai/projects/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ project_name: projName }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setFeedback(data.detail || '归档删除项目失败');
+      } else {
+        setFeedback(`已将项目「${projName}」移入本地回收站归档`);
+        await fetchUsers();
+        await loadOverview();
+      }
+    } catch {
+      setFeedback('删除项目请求异常');
+    } finally {
+      setProjectBusy(false);
+    }
+  };
+
+  const handleLoadMemOverview = useCallback(async (targetProj?: string) => {
+    const pName = targetProj || memProject;
+    if (!pName || !isAdmin) return;
+    try {
+      const res = await fetch(
+        `${API_BASE_URL}/api/admin/memories/overview?project=${encodeURIComponent(pName)}`,
+        { headers: getAuthHeaders() }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        setMemOverview(Array.isArray(data.users) ? data.users : []);
+      } else {
+        setMemOverview([]);
+      }
+    } catch {
+      // ignore
+    }
+  }, [memProject, isAdmin]);
+
+  useEffect(() => {
+    if (isAdmin) handleLoadMemOverview();
+  }, [isAdmin, handleLoadMemOverview]);
+
+  const handleCleanupOrphans = async () => {
+    setLoadingMem(true);
+    setFeedback('');
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/admin/memories/cleanup-orphan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ project: memProject }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        const dirs = Array.isArray(data.archivedDirs) ? data.archivedDirs : [];
+        setFeedback(
+          dirs.length > 0
+            ? `已归档孤儿记忆目录：${dirs.join(', ')}`
+            : '当前项目下没有需要清理的孤儿记忆目录'
+        );
+        await handleLoadMemOverview(memProject);
+      } else {
+        setFeedback(formatFriendlyMsg(data.detail, '当前无需清理孤儿目录'));
+      }
+    } catch {
+      setFeedback('清理孤儿目录网络异常');
+    } finally {
+      setLoadingMem(false);
+    }
+  };
+
+  const handleInspectMemories = async (overrideUserId?: string, overrideProject?: string) => {
+    const targetProject = overrideProject || memProject;
+    const targetUserId = overrideUserId || memUserId;
+    if (!targetProject || !targetUserId) return;
+    setLoadingMem(true);
+    setFeedback('');
+    try {
+      const res = await fetch(
+        `${API_BASE_URL}/api/admin/memories/inspect?project=${encodeURIComponent(targetProject)}&user_id=${encodeURIComponent(targetUserId)}`,
+        { headers: getAuthHeaders() }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setFeedback(formatFriendlyMsg(data.detail, '暂未查询到该用户的记忆记录'));
+        setInspectedMemories([]);
+      } else {
+        setInspectedMemories(Array.isArray(data.memories) ? data.memories : []);
+      }
+    } catch {
+      setFeedback('查询记忆网络异常');
+    } finally {
+      setLoadingMem(false);
+    }
+  };
+
+  const handleArchiveAdminMemory = async (filename: string) => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/ai/memories/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ project_name: memProject, filename }),
+      });
+      if (res.ok) {
+        setFeedback(`已归档记忆文件 ${filename}`);
+        await handleInspectMemories();
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setFeedback(data.detail || '归档记忆失败');
+      }
+    } catch {
+      setFeedback('归档记忆网络异常');
+    }
+  };
+
+  const handleConfirmDeleteUser = async () => {
     if (!deleteTarget) return;
     try {
       await deleteUser(deleteTarget.id);
       setDeleteTarget(null);
+      setFeedback('已删除成员账号');
+      await fetchUsers();
     } catch (err) {
-      alert(`删除失败: ${err instanceof Error ? err.message : '未知错误'}`);
+      setFeedback(err instanceof Error ? err.message : '删除成员失败');
     }
   };
 
-  const openProjectEditor = (u: UserAccount) => {
-    setEditingUser(u);
-    setEditingProjects(Array.isArray(u.allowedProjects) && u.allowedProjects.length > 0 ? [...u.allowedProjects] : ['通用公用库']);
-  };
-
-  const toggleEditingProject = (proj: string) => {
-    setEditingProjects((prev) =>
-      prev.includes(proj) ? prev.filter((p) => p !== proj) : [...prev, proj]
-    );
-  };
-
-  const handleSaveUserProjects = async () => {
-    if (!editingUser) return;
-    setIsSavingProjects(true);
+  const saveThemeColors = async (item: CustomThemeItem, patch: Record<string, string>) => {
+    setThemeBusy(true);
     try {
-      const nextList = editingProjects.length > 0 ? editingProjects : ['通用公用库'];
-      await updateUserProjects(editingUser.id, nextList);
-      setEditingUser(null);
+      await updateCustomTheme(item.id, {
+        name: item.name,
+        description: item.description || '',
+        logo: getThemeLogo(item),
+        colors: { ...(item.colors || {}), ...patch },
+      });
+      setFeedback(`已更新主题「${item.name}」配色`);
     } catch (err) {
-      alert(`保存项目权限失败: ${err instanceof Error ? err.message : '未知错误'}`);
+      setFeedback(err instanceof Error ? err.message : '更新主题配色失败');
     } finally {
-      setIsSavingProjects(false);
+      setThemeBusy(false);
     }
   };
 
-  const copyToClipboard = () => {
-    if (generatedResult) {
-      navigator.clipboard.writeText(
-        `账号: ${generatedResult.username}\n初始随机密码: ${generatedResult.pass}\n请登录系统后根据提示自行修改密码。`
-      );
-      setHasCopied(true);
-      setTimeout(() => setHasCopied(false), 2000);
+  const saveThemeLogo = async (item: CustomThemeItem, patch: Partial<ThemeLogo>) => {
+    setThemeBusy(true);
+    try {
+      await updateCustomTheme(item.id, {
+        name: item.name,
+        description: item.description || '',
+        logo: { ...getThemeLogo(item), ...patch },
+        colors: item.colors || {},
+      });
+      setFeedback(`已更新主题「${item.name}」Logo`);
+    } catch (err) {
+      setFeedback(err instanceof Error ? err.message : '更新 Logo 失败');
+    } finally {
+      setThemeBusy(false);
     }
   };
 
-  const toggleCreateProject = (proj: string) => {
-    setSelectedProjects((prev) =>
-      prev.includes(proj) ? prev.filter((p) => p !== proj) : [...prev, proj]
-    );
+  const handleApplyTheme = async (item: CustomThemeItem) => {
+    try {
+      await setTheme(item.id);
+      setFeedback(`已立即应用主题「${item.name}」`);
+    } catch (err) {
+      setFeedback(err instanceof Error ? err.message : '应用主题失败');
+    }
   };
+
+  const handleToggleThemeInMenu = (item: CustomThemeItem) => {
+    toggleThemeInMenu(item.id);
+    setFeedback(`已${item.activeInMenu !== false ? '取消' : '开启'}「${item.name}」在左下角主题菜单的展示`);
+  };
+
+  const handleExportTheme = (item: CustomThemeItem) => {
+    const payload = {
+      name: item.name,
+      description: item.description || '',
+      logo: getThemeLogo(item),
+      colors: item.colors || {},
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `${item.name || 'theme'}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDeleteTheme = async (item: CustomThemeItem) => {
+    setThemeBusy(true);
+    try {
+      await deleteCustomTheme(item.id);
+      setFeedback(`已删除主题「${item.name}」`);
+    } catch (err) {
+      setFeedback(err instanceof Error ? err.message : '删除主题失败');
+    } finally {
+      setThemeBusy(false);
+    }
+  };
+
+  const handleThemeFilePick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setThemeImportText(String(reader.result || ''));
+    reader.readAsText(file, 'utf-8');
+    e.target.value = '';
+  };
+
+  const handleImportThemeJson = async () => {
+    setThemeBusy(true);
+    try {
+      const parsed = JSON.parse(themeImportText);
+      const name = String(parsed?.name || '').trim();
+      if (!name) throw new Error('主题名称不能为空');
+      const colors = parsed && typeof parsed.colors === 'object' && parsed.colors ? parsed.colors : parsed;
+      const logo: ThemeLogo = {
+        icon: isLogoIcon(parsed?.logo?.icon)
+          ? parsed.logo.icon
+          : isLogoIcon(parsed?.logoShape)
+            ? parsed.logoShape
+            : 'ring',
+        fg: String(parsed?.logo?.fg || colors?.['--logo-fg'] || '#ffffff'),
+        bg: String(parsed?.logo?.bg || colors?.['--logo-bg'] || '#4f46e5'),
+      };
+      await importCustomTheme({
+        name,
+        description: String(parsed?.description || '').trim(),
+        logo,
+        colors,
+      });
+      setThemeImportOpen(false);
+      setThemeImportText('');
+      setFeedback(`已导入并发布主题「${name}」`);
+    } catch (err) {
+      setFeedback(err instanceof Error ? err.message : '导入主题 JSON 失败');
+    } finally {
+      setThemeBusy(false);
+    }
+  };
+
+  const tabs: Array<{ id: GovTab; label: string; icon: LucideIcon; adminOnly?: boolean }> = [
+    { id: 'members', label: '成员与权限', icon: Users },
+    { id: 'projects', label: '项目与 AI 资料库', icon: FolderKanban },
+    { id: 'compute', label: '算力与记忆治理', icon: Cpu, adminOnly: true },
+    { id: 'governance', label: '文件/笔记/审计', icon: ShieldCheck, adminOnly: true },
+    { id: 'themes', label: '主题与风格库', icon: Palette, adminOnly: true },
+  ];
+
+  const visibleTabs = tabs.filter((t) => !t.adminOnly || isAdmin);
 
   return (
-    <div className="h-full w-full bg-[#1e2128] text-gray-200 p-8 overflow-y-auto select-none">
-      <div className="flex items-center justify-between pb-6 mb-6 border-b border-gray-800">
+    <div className="h-full overflow-y-auto p-6 space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-bold text-gray-100 flex items-center gap-2">
-            <Users className="text-blue-400" size={22} />
-            用户账号与项目权限管理
+          <h1 className="text-xl font-bold text-white flex items-center gap-2">
+            <ShieldCheck size={20} className="text-blue-400" />
+            <span>系统管理中心</span>
           </h1>
           <p className="text-xs text-gray-400 mt-1">
-            管理员可创建用户账号，并随时调整各成员可访问与管理的知识库项目权限。
+            统一管理成员账号、知识库项目授权、本地 AI 算力与记忆、云端治理审计及全局主题风格。
           </p>
         </div>
 
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setIsAddModalOpen(true)}
-            className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs px-3.5 py-2 rounded-xl transition-colors shadow-lg shadow-blue-600/20"
-          >
-            <UserPlus size={15} />
-            <span>创建用户账号</span>
-          </button>
-          {currentUser?.role === 'admin' && (
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={loadOverview}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#1a1d24] hover:bg-[#232731] border border-gray-700 text-xs text-gray-200"
+            >
+              <RefreshCw size={13} className={loadingOverview ? 'animate-spin' : ''} />
+              <span>刷新状态</span>
+            </button>
+          )}
+          {activeTab === 'members' && isAdmin && (
+            <button
+              type="button"
+              onClick={() => setCreateOpen(true)}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-xs font-medium text-white"
+            >
+              <Plus size={14} />
+              <span>创建用户账号</span>
+            </button>
+          )}
+          {activeTab === 'themes' && isAdmin && (
             <button
               type="button"
               onClick={() => setThemeModalOpen(true)}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#1a1d24] hover:bg-[#232731] border border-gray-700 text-xs font-medium text-gray-200"
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-xs font-medium text-white"
             >
-              <Palette size={14} className="text-blue-400" />
-              <span>风格库管理</span>
+              <Palette size={14} />
+              <span>导入 / 编辑风格 JSON</span>
             </button>
           )}
         </div>
       </div>
 
-      <div className="bg-[#252830] border border-gray-700/80 rounded-2xl overflow-hidden shadow-xl">
-        <div className="grid grid-cols-12 gap-4 px-6 py-3.5 bg-[#1f2229] border-b border-gray-700/80 text-xs font-semibold text-gray-400">
-          <div className="col-span-3">用户与登录账号</div>
-          <div className="col-span-2">系统角色</div>
-          <div className="col-span-3">授权知识库项目</div>
-          <div className="col-span-2">密码状态</div>
-          <div className="col-span-2 text-right">操作</div>
+      <div className="flex flex-wrap items-center gap-2 border-b border-gray-800 pb-3">
+        {visibleTabs.map((t) => {
+          const Icon = t.icon;
+          const active = activeTab === t.id;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setActiveTab(t.id)}
+              className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-medium transition-colors ${
+                active
+                  ? 'bg-blue-600/20 text-blue-300 border border-blue-500/40'
+                  : 'bg-[#1a1d24] text-gray-400 hover:text-gray-200 border border-gray-800'
+              }`}
+            >
+              <Icon size={14} />
+              <span>{t.label}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {feedback && (
+        <div className="px-4 py-2.5 rounded-xl bg-blue-950/40 border border-blue-500/30 text-xs text-blue-300">
+          {feedback}
         </div>
+      )}
 
-        <div className="divide-y divide-gray-700/50 text-xs">
-          {(users || []).map((u) => (
-            <div key={u.id} className="grid grid-cols-12 gap-4 px-6 py-4 items-center hover:bg-[#2b2f3a] transition-colors">
-              <div className="col-span-3 flex items-center gap-2.5">
-                <div className={`relative w-8 h-8 rounded-lg overflow-hidden flex items-center justify-center font-bold text-xs shrink-0 ${
-                  u.role === 'admin' ? 'bg-green-600/20 text-green-400' : 'bg-blue-600/20 text-blue-400'
-                }`}>
-                  <span className="pointer-events-none select-none">
-                    {(u.name || u.username || '?').slice(0, 1)}
+      {generatedResult && (
+        <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 rounded-xl bg-emerald-950/60 border border-emerald-500/30 text-xs text-emerald-200">
+          <div className="min-w-0">
+            <div className="font-semibold">新建账号初始凭据</div>
+            <div className="mt-1 break-all font-mono">
+              账号：{generatedResult.username} ｜ 初始密码：{generatedResult.pass}
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={copyCredentials}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/30"
+            >
+              {hasCopied ? <Check size={12} /> : <Copy size={12} />}
+              <span>{hasCopied ? '已复制' : '复制凭据'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setGeneratedResult(null)}
+              className="text-emerald-300/70 hover:text-emerald-100"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'members' && (
+        <div className="bg-[#252830] border border-gray-700/80 rounded-2xl overflow-hidden">
+          <div className="grid grid-cols-12 gap-4 px-6 py-3.5 bg-[#1f2229] border-b border-gray-700/80 text-xs font-semibold text-gray-400">
+            <div className="col-span-3">用户与登录账号</div>
+            <div className="col-span-2">系统角色</div>
+            <div className="col-span-3">授权知识库项目</div>
+            <div className="col-span-2">密码状态</div>
+            <div className="col-span-2 text-right">操作</div>
+          </div>
+
+          <div className="divide-y divide-gray-800">
+            {users.map((u) => (
+              <div
+                key={u.id}
+                className="grid grid-cols-12 gap-4 px-6 py-4 items-center text-xs hover:bg-[var(--bg-hover)] transition-colors"
+              >
+                <div className="col-span-3 flex items-center gap-3 min-w-0">
+                  <div
+                    className={`relative w-8 h-8 rounded-lg overflow-hidden flex items-center justify-center font-bold text-xs shrink-0 ${
+                      u.role === 'admin'
+                        ? 'bg-green-600/20 text-green-400'
+                        : 'bg-blue-600/20 text-blue-400'
+                    }`}
+                  >
+                    <span className="pointer-events-none select-none">
+                      {(u.name || u.username || '?').slice(0, 1)}
+                    </span>
+                    {u.avatarUrl && (
+                      <img
+                        src={u.avatarUrl}
+                        alt={u.name || u.username || '头像'}
+                        className="absolute inset-0 w-full h-full object-cover"
+                        onError={(e) => {
+                          (e.currentTarget as HTMLImageElement).style.display = 'none';
+                        }}
+                      />
+                    )}
+                  </div>
+                  <div className="truncate">
+                    <div className="font-semibold text-gray-100 truncate">{u.name || u.username}</div>
+                    <div className="text-[11px] text-gray-400 truncate">@{u.username}</div>
+                  </div>
+                </div>
+
+                <div className="col-span-2">
+                  <span
+                    className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium border ${
+                      u.role === 'admin'
+                        ? 'bg-green-950/60 text-green-300 border-green-500/30'
+                        : 'bg-blue-950/60 text-blue-300 border-blue-500/30'
+                    }`}
+                  >
+                    {u.role === 'admin' ? '超级管理员' : '普通成员'}
                   </span>
-                  {u.avatarUrl && (
-                    <img
-                      src={u.avatarUrl}
-                      alt={u.name || u.username || '头像'}
-                      className="absolute inset-0 w-full h-full object-cover"
-                      onError={(e) => {
-                        (e.currentTarget as HTMLImageElement).style.display = 'none';
-                      }}
-                    />
-                  )}
                 </div>
-                <div>
-                  <div className="font-semibold text-gray-200">{u.name}</div>
-                  <div className="text-[11px] text-gray-400">@{u.username}</div>
-                </div>
-              </div>
 
-              <div className="col-span-2">
-                <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium border ${
-                  u.role === 'admin'
-                    ? 'bg-green-950/40 text-green-400 border-green-700/50'
-                    : 'bg-blue-950/40 text-blue-400 border-blue-700/50'
-                }`}>
-                  {u.role === 'admin' && <ShieldCheck size={12} />}
-                  {u.role === 'admin' ? '超级管理员' : '普通成员'}
-                </span>
-              </div>
-
-              <div className="col-span-3">
-                <div className="flex flex-wrap gap-1">
-                  {(u.allowedProjects || []).map((p) => (
-                    <span key={p} className="bg-[#1e2128] text-gray-300 px-2 py-0.5 rounded text-[10px] border border-gray-700">
-                      {p}
+                <div className="col-span-3 flex flex-wrap gap-1.5">
+                  {(u.allowedProjects || ['通用公用库']).map((proj) => (
+                    <span
+                      key={proj}
+                      className="px-2 py-0.5 rounded-md bg-[#1a1d24] border border-gray-700 text-[11px] text-gray-300"
+                    >
+                      {proj}
                     </span>
                   ))}
                 </div>
-              </div>
 
-              <div className="col-span-2">
-                {u.mustChangePassword ? (
-                  <span className="text-yellow-400 text-[11px] inline-flex items-center gap-1">
-                    <KeyRound size={12} /> 待首次修改
-                  </span>
-                ) : (
-                  <span className="text-green-400 text-[11px]">正常</span>
-                )}
-              </div>
+                <div className="col-span-2 text-green-400 font-medium">正常</div>
 
-              <div className="col-span-2 flex items-center justify-end gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => openProjectEditor(u)}
-                  className="inline-flex items-center justify-center gap-1 px-2 py-1 rounded-lg bg-blue-600/15 hover:bg-blue-600/25 text-blue-600 border border-blue-500/30 text-[11px] shrink-0"
-                  title="调整该项目成员权限"
-                >
-                  <SlidersHorizontal size={12} />
-                  <span>项目权限</span>
-                </button>
-                {u.username !== 'admin' ? (
-                  <button
-                    type="button"
-                    onClick={() => setDeleteTarget(u)}
-                    className="w-6 h-6 inline-flex items-center justify-center rounded-lg text-gray-400 hover:text-rose-500 hover:bg-rose-500/10 shrink-0"
-                    title="删除账号"
-                  >
-                    <Trash2 size={13} />
-                  </button>
-                ) : (
-                  <span className="w-6 h-6 inline-block shrink-0 invisible" aria-hidden="true" />
-                )}
+                <div className="col-span-2 flex items-center justify-end gap-1.5">
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => openPermModal(u)}
+                      className="inline-flex items-center justify-center gap-1 px-2.5 py-1 rounded-lg bg-blue-600/15 hover:bg-blue-600/25 text-blue-300 border border-blue-500/30 text-[11px] shrink-0"
+                    >
+                      <SlidersHorizontal size={12} />
+                      <span>项目权限</span>
+                    </button>
+                  )}
+                  {isAdmin && u.username !== 'admin' ? (
+                    <button
+                      type="button"
+                      onClick={() => setDeleteTarget(u)}
+                      className="w-6 h-6 inline-flex items-center justify-center rounded-lg text-gray-400 hover:text-rose-400 hover:bg-rose-500/10 shrink-0"
+                      title="删除账号"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  ) : (
+                    <span className="w-6 h-6 inline-block shrink-0" />
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* 调整成员项目权限弹窗 */}
-      {editingUser && (
-        <div className="fixed inset-0 bg-black/65 flex items-center justify-center z-50 p-4">
-          <div className="bg-[#252830] border border-gray-700 rounded-2xl w-full max-w-md p-6 shadow-2xl">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-sm font-bold text-white">
-                调整「{editingUser.name || editingUser.username}」的项目权限
-              </h2>
-              <button type="button" onClick={() => setEditingUser(null)} className="text-gray-400 hover:text-white">
-                <X size={16} />
+      {activeTab === 'projects' && (
+        <div className="space-y-4">
+          {isAdmin && (
+            <form
+              onSubmit={handleCreateProject}
+              className="bg-[#252830] border border-gray-700/80 rounded-2xl p-4 flex flex-wrap items-center gap-3"
+            >
+              <input
+                type="text"
+                value={newProjectName}
+                onChange={(e) => setNewProjectName(e.target.value)}
+                placeholder="输入新知识库项目名称（例如：南方电网 / 财务风控）"
+                className="flex-1 min-w-[220px] bg-[#1a1d24] border border-gray-700 rounded-xl px-3 py-2 text-xs text-white"
+              />
+              <button
+                type="submit"
+                disabled={projectBusy}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-xs font-medium text-white"
+              >
+                <Plus size={14} />
+                <span>新建项目沙盒</span>
+              </button>
+            </form>
+          )}
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {availableProjects.map((proj) => {
+              const authUsers = users.filter(
+                (u) => u.role === 'admin' || (u.allowedProjects || []).includes(proj)
+              );
+              return (
+                <div
+                  key={proj}
+                  className="bg-[#252830] border border-gray-700/80 rounded-2xl p-4 space-y-3"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="font-semibold text-sm text-white truncate">{proj}</div>
+                    {isAdmin && proj !== '通用公用库' && (
+                      <button
+                        type="button"
+                        disabled={projectBusy}
+                        onClick={() => handleDeleteProject(proj)}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] text-rose-300 hover:bg-rose-500/15 border border-rose-500/30"
+                        title="移入本地回收站归档"
+                      >
+                        <Archive size={12} />
+                        <span>归档删除</span>
+                      </button>
+                    )}
+                  </div>
+                  <div className="text-[11px] text-gray-400">已授权账号（{authUsers.length}）：</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {authUsers.map((au) => (
+                      <span
+                        key={au.id}
+                        className="px-2 py-0.5 rounded-md bg-[#1a1d24] border border-gray-700 text-[11px] text-gray-200"
+                      >
+                        {au.name || au.username}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'compute' && isAdmin && (
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="bg-[#252830] border border-gray-700/80 rounded-2xl p-4 space-y-1.5">
+              <div className="text-xs text-gray-400">本地 Agent（8001 / Ollama / Chroma）</div>
+              <div className="text-base font-bold text-white">
+                {overview?.agent?.online ? '在线（已连通隧道）' : '离线或未连接'}
+              </div>
+              <div className="text-[11px] text-gray-400 truncate">
+                {overview?.agent?.agentUrl || 'http://127.0.0.1:8001'}
+              </div>
+            </div>
+            <div className="bg-[#252830] border border-gray-700/80 rounded-2xl p-4 space-y-1.5">
+              <div className="text-xs text-gray-400">已发现知识库项目数</div>
+              <div className="text-base font-bold text-white">{availableProjects.length} 个</div>
+              <div className="text-[11px] text-gray-400">支持分项目独立向量切片与隔离记忆</div>
+            </div>
+            <div className="bg-[#252830] border border-gray-700/80 rounded-2xl p-4 space-y-1.5">
+              <div className="text-xs text-gray-400">记忆存储与归档策略</div>
+              <div className="text-base font-bold text-white">按项目与用户独立隔离</div>
+              <div className="text-[11px] text-gray-400">删除记忆自动归档至 _Archive</div>
+            </div>
+          </div>
+
+          <div className="bg-[#252830] border border-gray-700/80 rounded-2xl p-4 space-y-3">
+            <div className="text-xs font-semibold text-white">按「项目 + 用户」审查与归档 .md 记忆文件</div>
+            <div className="flex flex-wrap items-center gap-2.5">
+              <select
+                value={memProject}
+                onChange={(e) => setMemProject(e.target.value)}
+                className="bg-[#1a1d24] border border-gray-700 rounded-xl px-3 py-2 text-xs text-white"
+              >
+                {availableProjects.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={memUserId}
+                onChange={(e) => setMemUserId(e.target.value)}
+                className="bg-[#1a1d24] border border-gray-700 rounded-xl px-3 py-2 text-xs text-white"
+              >
+                {users.map((u) => (
+                  <option key={u.id} value={String(u.id)}>
+                    {u.name || u.username} (ID: {u.id})
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => handleInspectMemories()}
+                disabled={loadingMem}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-xs font-medium text-white"
+              >
+                <Search size={13} />
+                <span>{loadingMem ? '检索中...' : '查看记忆'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleLoadMemOverview(memProject)}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#1a1d24] hover:bg-[#232731] border border-gray-700 text-xs text-gray-200"
+              >
+                <span>扫描项目用户</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleCleanupOrphans}
+                disabled={loadingMem}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-rose-600/15 hover:bg-rose-600/25 border border-rose-500/30 text-xs text-rose-300"
+              >
+                <Archive size={13} />
+                <span>清理孤儿目录</span>
               </button>
             </div>
-            <p className="text-[11px] text-gray-400 mb-3">
-              勾选后成员即可访问该项目知识库、对话与执行项目级删除操作。
-            </p>
-            <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
-              {availableProjects.map((proj) => {
-                const checked = editingProjects.includes(proj);
-                return (
-                  <button
-                    key={proj}
-                    type="button"
-                    onClick={() => toggleEditingProject(proj)}
-                    className={`w-full flex items-center justify-between px-3 py-2 rounded-xl border text-xs text-left transition-colors ${
-                      checked
-                        ? 'bg-blue-600/20 border-blue-500/40 text-blue-200'
-                        : 'bg-[#1c1f26] border-gray-700/80 text-gray-300 hover:bg-[#232731]'
-                    }`}
+
+            {memOverview.length > 0 && (
+              <div className="space-y-2 pt-1">
+                <div className="text-[11px] font-semibold text-gray-400">项目记忆分布总览</div>
+                <div className="flex flex-wrap gap-2">
+                  {memOverview.map((item) => (
+                    <button
+                      key={item.userDir}
+                      type="button"
+                      onClick={() => {
+                        setMemUserId(item.userDir);
+                        handleInspectMemories(item.userDir);
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-[#1a1d24] hover:bg-[#232731] border border-gray-800 text-left text-[11px]"
+                    >
+                      <span className="font-medium text-indigo-300">{item.userDir}</span>
+                      <span className="text-gray-400 ml-2">{item.memoryCount} 条</span>
+                      <span className="text-gray-500 ml-2">{item.latestUpdatedAt}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-2 pt-1">
+              {inspectedMemories.length === 0 ? (
+                <div className="text-xs text-gray-400 py-3">暂无已加载的记忆条目，点击“查看记忆”查询。</div>
+              ) : (
+                inspectedMemories.map((m) => (
+                  <div
+                    key={m.filename}
+                    className="flex items-center justify-between gap-3 bg-[#1a1d24] border border-gray-800 rounded-xl px-3.5 py-2.5 text-xs"
                   >
-                    <span>{proj}</span>
-                    {checked ? <CheckSquare size={15} className="text-blue-400" /> : <Square size={15} className="text-gray-500" />}
-                  </button>
-                );
-              })}
-            </div>
-            <div className="flex justify-end gap-2 mt-5">
-              <button
-                type="button"
-                onClick={() => setEditingUser(null)}
-                className="px-3.5 py-1.5 rounded-lg text-xs text-gray-400 hover:bg-gray-800"
-              >
-                取消
-              </button>
-              <button
-                type="button"
-                disabled={isSavingProjects}
-                onClick={handleSaveUserProjects}
-                className="px-4 py-1.5 rounded-lg text-xs bg-blue-600 hover:bg-blue-500 text-white font-medium"
-              >
-                {isSavingProjects ? '保存中...' : '保存权限'}
-              </button>
+                    <div className="min-w-0">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSelectedMemContent({
+                            title: m.title,
+                            content: m.content || m.preview || '',
+                          })
+                        }
+                        className="font-medium text-white hover:text-indigo-300 truncate text-left block"
+                        title="查看记忆全文"
+                      >
+                        {m.title}
+                      </button>
+                      <div className="text-[11px] text-gray-400 truncate">{m.preview || m.filename}</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleArchiveAdminMemory(m.filename)}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] text-rose-300 hover:bg-rose-500/15 border border-rose-500/30 shrink-0"
+                    >
+                      <Archive size={12} />
+                      <span>归档</span>
+                    </button>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         </div>
       )}
 
-      {/* 创建用户弹窗 */}
-      {isAddModalOpen && (
+      {activeTab === 'governance' && isAdmin && (
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+            <div className="bg-[#252830] border border-gray-700/80 rounded-2xl p-4">
+              <div className="text-xs text-gray-400">注册账号总数</div>
+              <div className="text-xl font-bold text-white mt-1">{overview?.db?.usersCount ?? users.length}</div>
+            </div>
+            <div className="bg-[#252830] border border-gray-700/80 rounded-2xl p-4">
+              <div className="text-xs text-gray-400">云端笔记记录数</div>
+              <div className="text-xl font-bold text-white mt-1">{overview?.db?.notesCount ?? '-'}</div>
+            </div>
+            <div className="bg-[#252830] border border-gray-700/80 rounded-2xl p-4">
+              <div className="text-xs text-gray-400">网盘存储占用</div>
+              <div className="text-xl font-bold text-white mt-1">
+                {(((govDetail?.storage?.totalBytes ?? 0) / 1024 / 1024)).toFixed(2)} MB
+              </div>
+              <div className="text-[11px] text-gray-400">{govDetail?.storage?.totalFiles ?? 0} 个文件</div>
+            </div>
+            <div className="bg-[#252830] border border-gray-700/80 rounded-2xl p-4">
+              <div className="text-xs text-gray-400">审计日志总量</div>
+              <div className="text-xl font-bold text-white mt-1">{overview?.db?.auditLogsCount ?? '-'}</div>
+            </div>
+          </div>
+
+          <div className="bg-[#252830] border border-gray-700/80 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2 flex-1 min-w-[220px]">
+              <input
+                type="text"
+                value={govKeyword}
+                onChange={(e) => setGovKeyword(e.target.value)}
+                placeholder="按关键词筛选文件 / 笔记 / 审计记录..."
+                className="flex-1 bg-[#1a1d24] border border-gray-700 rounded-xl px-3 py-2 text-xs text-white"
+              />
+              <button
+                type="button"
+                disabled={govBusy}
+                onClick={() => loadGovernanceDetail(govKeyword)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-xs font-medium text-white"
+              >
+                <Search size={13} />
+                <span>筛选</span>
+              </button>
+            </div>
+            <button
+              type="button"
+              disabled={govBusy}
+              onClick={handlePruneAudits}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-600/15 hover:bg-rose-600/25 border border-rose-500/30 text-xs text-rose-300"
+            >
+              <Archive size={13} />
+              <span>清理旧审计（保留最新200条）</span>
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="bg-[#252830] border border-gray-700/80 rounded-2xl p-4 space-y-2.5">
+              <div className="text-xs font-semibold text-white">大文件与存储目录治理</div>
+              {(govDetail?.storage?.topFiles || []).length === 0 ? (
+                <div className="text-xs text-gray-400 py-3">暂无存储文件或匹配结果。</div>
+              ) : (
+                <div className="divide-y divide-gray-800 text-xs max-h-64 overflow-y-auto">
+                  {(govDetail?.storage?.topFiles || []).map((f) => (
+                    <div key={f.path} className="py-2 flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-gray-200 truncate">{f.path}</div>
+                        <div className="text-[11px] text-gray-400">{(f.size / 1024).toFixed(1)} KB</div>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={govBusy}
+                        onClick={() => handleDeleteGovFile(f.path)}
+                        className="px-2 py-1 rounded-lg text-[11px] text-rose-300 hover:bg-rose-500/15 border border-rose-500/30 shrink-0"
+                      >
+                        删除
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="bg-[#252830] border border-gray-700/80 rounded-2xl p-4 space-y-2.5">
+              <div className="text-xs font-semibold text-white">笔记条目治理</div>
+              {(govDetail?.notes || []).length === 0 ? (
+                <div className="text-xs text-gray-400 py-3">暂无笔记记录或匹配结果。</div>
+              ) : (
+                <div className="divide-y divide-gray-800 text-xs max-h-64 overflow-y-auto">
+                  {(govDetail?.notes || []).map((n) => (
+                    <div key={String(n.id)} className="py-2 flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-gray-200 truncate">{n.title}</div>
+                        <div className="text-[11px] text-gray-400">所属：{n.owner || '-'} · {n.updatedAt || ''}</div>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={govBusy}
+                        onClick={() => handleDeleteGovNote(n.id, n.title)}
+                        className="px-2 py-1 rounded-lg text-[11px] text-rose-300 hover:bg-rose-500/15 border border-rose-500/30 shrink-0"
+                      >
+                        删除
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="bg-[#252830] border border-gray-700/80 rounded-2xl p-4 space-y-2.5">
+            <div className="text-xs font-semibold text-white">系统审计记录</div>
+            {(govDetail?.audits || overview?.db?.recentAudits || []).length === 0 ? (
+              <div className="text-xs text-gray-400 py-3">暂无审计记录。</div>
+            ) : (
+              <div className="divide-y divide-gray-800 text-xs max-h-64 overflow-y-auto">
+                {(govDetail?.audits || overview?.db?.recentAudits || []).map((item, idx) => (
+                  <div key={item.id ?? idx} className="py-2 flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-gray-200">
+                      <span className="text-blue-300 font-medium">{item.username || '系统'}</span> ·{' '}
+                      <span>{item.action || '操作'}</span>{' '}
+                      <span className="text-gray-400">{item.target || ''}</span>
+                    </div>
+                    <div className="text-[11px] text-gray-500">{item.created_at || ''}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'themes' && isAdmin && (
+        <div className="bg-[#252830] border border-gray-700/80 rounded-2xl p-5 space-y-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="text-sm font-bold text-white">全局主题独立方案库</div>
+              <p className="text-xs text-gray-400 mt-1">
+                所有方案均为独立主题；勾选「激活」可同时纳入左下角主题菜单，「立即应用」只切换当前主题。
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                ref={themeFileInputRef}
+                type="file"
+                accept="application/json,.json"
+                onChange={handleThemeFilePick}
+                className="hidden"
+              />
+              <button
+                type="button"
+                onClick={() => themeFileInputRef.current?.click()}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1a1d24] hover:bg-[#232731] border border-gray-700 text-[11px] text-gray-200"
+              >
+                <Upload size={13} />
+                <span>选择 JSON 文件</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setThemeImportText('');
+                  setThemeImportOpen(true);
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-[11px] font-medium text-white"
+              >
+                <Plus size={13} />
+                <span>导入 JSON</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto border border-gray-700/60 rounded-xl">
+            <table className="min-w-max w-full text-[11px] text-gray-300 border-collapse">
+              <thead>
+                <tr className="bg-[#1f2229] text-gray-400">
+                  <th title="勾选后该主题会出现在左下角主题菜单中" className="px-3 py-2 text-left font-semibold whitespace-nowrap">
+                    激活
+                  </th>
+                  <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">主题名</th>
+                  <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">主题 Logo</th>
+                  <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">主题描述</th>
+                  {THEME_COLOR_FIELDS.map((field) => (
+                    <th
+                      key={field.key}
+                      title={`${field.description}（${field.key}）`}
+                      className="px-1.5 py-2 font-semibold whitespace-nowrap"
+                    >
+                      {field.label}
+                    </th>
+                  ))}
+                  <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">操作</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-800">
+                {uniqueThemes.map((item) => {
+                  const isApplied = theme === item.id;
+                  const isMenuActive = item.activeInMenu !== false;
+                  const locked = Boolean(item.readonly);
+                  return (
+                    <tr
+                      key={item.id}
+                      className={`hover:bg-[var(--bg-hover)] transition-colors ${isApplied ? 'bg-blue-600/10' : ''}`}
+                    >
+                      <td className="px-3 py-2">
+                        <label className="flex items-center gap-1.5 cursor-pointer" title="纳入左下角主题菜单">
+                          <input
+                            type="checkbox"
+                            checked={isMenuActive}
+                            onChange={() => handleToggleThemeInMenu(item)}
+                            className="rounded border-gray-600"
+                          />
+                          <span className={isMenuActive ? 'text-emerald-300' : 'text-gray-500'}>
+                            {isMenuActive ? '菜单中' : '已隐藏'}
+                          </span>
+                        </label>
+                      </td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        <div className="flex items-center gap-1.5 font-medium text-gray-100">
+                          {item.name}
+                          {locked && (
+                            <span title="锁定不可修改">
+                              <Lock size={11} className="text-amber-400" />
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[10px] text-gray-500">{item.isBuiltin ? '内置方案' : '自定义方案'}</div>
+                      </td>
+                      <td className="px-3 py-2">
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            disabled={locked || themeBusy}
+                            title={
+                              locked
+                                ? '该主题 Logo 已锁定'
+                                : `点击更换 Logo 图标（${LOGO_ICON_LABELS[getThemeLogo(item).icon]}）`
+                            }
+                            onClick={(e) => {
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              setLogoPicker((prev) =>
+                                prev?.id === item.id
+                                  ? null
+                                  : { id: item.id, top: rect.bottom + 4, left: rect.left }
+                              );
+                            }}
+                            className="w-6 h-6 rounded-md flex items-center justify-center shrink-0 disabled:cursor-default"
+                            style={{
+                              backgroundColor: getThemeLogo(item).bg,
+                              color: getThemeLogo(item).fg,
+                            }}
+                          >
+                            {renderThemeLogo(item, 12)}
+                          </button>
+                          {THEME_LOGO_FIELDS.map((field) => (
+                            <label
+                              key={field.key}
+                              title={field.label}
+                              className="relative w-3.5 h-3.5 rounded-sm border border-gray-600 shrink-0 cursor-pointer"
+                              style={{ backgroundColor: toColorInputValue(getThemeLogo(item)[field.key]) }}
+                            >
+                              <input
+                                type="color"
+                                disabled={locked || themeBusy}
+                                value={toColorInputValue(getThemeLogo(item)[field.key])}
+                                onChange={(e) => void saveThemeLogo(item, { [field.key]: e.target.value })}
+                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-default"
+                              />
+                            </label>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 max-w-[180px] truncate" title={item.description || ''}>
+                        {item.description || '-'}
+                      </td>
+                      {THEME_COLOR_FIELDS.map((field) => (
+                        <td key={field.key} className="px-1.5 py-2 text-center">
+                          <label
+                            title={`${field.description}（${field.key}）`}
+                            className="relative inline-block w-6 h-6 rounded border border-gray-600 cursor-pointer"
+                            style={{ backgroundColor: toColorInputValue(item.colors?.[field.key]) }}
+                          >
+                            <input
+                              type="color"
+                              disabled={locked || themeBusy}
+                              value={toColorInputValue(item.colors?.[field.key])}
+                              onChange={(e) => void saveThemeColors(item, { [field.key]: e.target.value })}
+                              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-default"
+                            />
+                          </label>
+                        </td>
+                      ))}
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            title={isApplied ? '当前已应用' : '立即应用该主题'}
+                            disabled={isApplied}
+                            onClick={() => void handleApplyTheme(item)}
+                            className={`inline-flex items-center gap-1 px-2 py-1 rounded-md border text-[10px] ${
+                              isApplied
+                                ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
+                                : 'border-gray-600 bg-[#1a1d24] text-gray-300 hover:text-white'
+                            } disabled:cursor-default`}
+                          >
+                            {isApplied && <Check size={10} />}
+                            {isApplied ? '使用中' : '立即应用'}
+                          </button>
+                          <button
+                            type="button"
+                            title="编辑 JSON"
+                            disabled={locked}
+                            onClick={() => {
+                              setThemeEditTarget(item.id);
+                              setThemeModalOpen(true);
+                            }}
+                            className="p-1 rounded-md text-gray-400 hover:text-blue-300 hover:bg-[#323640] disabled:opacity-40"
+                          >
+                            <Pencil size={12} />
+                          </button>
+                          <button
+                            type="button"
+                            title="导出该主题 JSON"
+                            onClick={() => handleExportTheme(item)}
+                            className="p-1 rounded-md text-gray-400 hover:text-emerald-300 hover:bg-[#323640]"
+                          >
+                            <Download size={12} />
+                          </button>
+                          {!item.isBuiltin && (
+                            <button
+                              type="button"
+                              title="删除该主题"
+                              disabled={themeBusy}
+                              onClick={() => void handleDeleteTheme(item)}
+                              className="p-1 rounded-md text-gray-400 hover:text-rose-400 hover:bg-[#323640] disabled:opacity-40"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {createOpen && (
         <div className="fixed inset-0 bg-black/65 flex items-center justify-center z-50 p-4">
-          <form onSubmit={handleCreateSubmit} className="bg-[#252830] border border-gray-700 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
+          <form
+            onSubmit={handleCreateUser}
+            className="bg-[#252830] border border-gray-700 rounded-2xl w-full max-w-md p-5 shadow-2xl space-y-3.5"
+          >
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-bold text-white">创建新成员账号</h2>
-              <button type="button" onClick={() => setIsAddModalOpen(false)} className="text-gray-400 hover:text-white">
+              <h3 className="text-sm font-bold text-white">创建成员账号</h3>
+              <button type="button" onClick={() => setCreateOpen(false)} className="text-gray-400 hover:text-white">
                 <X size={16} />
               </button>
             </div>
             <div>
-              <label className="block text-xs text-gray-400 mb-1">登录用户名 *</label>
+              <label className="block text-xs text-gray-400 mb-1">登录账号（username）</label>
               <input
                 type="text"
                 required
                 value={newUsername}
                 onChange={(e) => setNewUsername(e.target.value)}
                 className="w-full bg-[#1a1d24] border border-gray-700 rounded-lg px-3 py-2 text-xs text-white"
-                placeholder="例如 zhangsan"
               />
             </div>
             <div>
-              <label className="block text-xs text-gray-400 mb-1">显示姓名</label>
+              <label className="block text-xs text-gray-400 mb-1">显示昵称</label>
               <input
                 type="text"
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
                 className="w-full bg-[#1a1d24] border border-gray-700 rounded-lg px-3 py-2 text-xs text-white"
-                placeholder="例如 张三"
               />
             </div>
-            <div>
-              <label className="block text-xs text-gray-400 mb-1.5">授权知识库项目</label>
-              <div className="flex flex-wrap gap-1.5">
-                {availableProjects.map((proj) => {
-                  const active = selectedProjects.includes(proj);
-                  return (
-                    <button
-                      key={proj}
-                      type="button"
-                      onClick={() => toggleCreateProject(proj)}
-                      className={`px-2.5 py-1 rounded-lg text-xs border ${
-                        active
-                          ? 'bg-blue-600/25 border-blue-500/50 text-blue-200'
-                          : 'bg-[#1a1d24] border-gray-700 text-gray-400'
-                      }`}
-                    >
-                      {proj}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
+            <p className="text-[11px] text-gray-400">
+              初始密码由系统随机生成，创建成功后会展示并可一键复制。新账号默认仅授权「通用公用库」，可在成员列表中继续调整。
+            </p>
             <div className="flex justify-end gap-2 pt-2">
-              <button type="button" onClick={() => setIsAddModalOpen(false)} className="px-3.5 py-1.5 rounded-lg text-xs text-gray-400 hover:bg-gray-800">
+              <button
+                type="button"
+                onClick={() => setCreateOpen(false)}
+                className="px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:bg-gray-800"
+              >
                 取消
               </button>
-              <button type="submit" className="px-4 py-1.5 rounded-lg text-xs bg-blue-600 hover:bg-blue-500 text-white font-medium">
-                确认创建
+              <button
+                type="submit"
+                disabled={creating}
+                className="px-4 py-1.5 rounded-lg text-xs bg-blue-600 hover:bg-blue-500 text-white font-medium"
+              >
+                {creating ? '创建中...' : '确认创建'}
               </button>
             </div>
           </form>
         </div>
       )}
 
-      {/* 初始密码弹窗 */}
-      {generatedResult && (
+      {permTarget && (
         <div className="fixed inset-0 bg-black/65 flex items-center justify-center z-50 p-4">
-          <div className="bg-[#252830] border border-gray-700 rounded-2xl w-full max-w-sm p-6 shadow-2xl space-y-3">
-            <h3 className="text-sm font-bold text-white">账号创建成功</h3>
-            <div className="bg-[#1a1d24] rounded-xl p-3 text-xs space-y-1 border border-gray-700">
-              <div>账号：<span className="text-blue-300 font-mono">{generatedResult.username}</span></div>
-              <div>初始密码：<span className="text-emerald-300 font-mono">{generatedResult.pass}</span></div>
+          <div className="bg-[#252830] border border-gray-700 rounded-2xl w-full max-w-md p-5 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold text-white">
+                配置「{permTarget.name || permTarget.username}」的知识库项目权限
+              </h3>
+              <button type="button" onClick={() => setPermTarget(null)} className="text-gray-400 hover:text-white">
+                <X size={16} />
+              </button>
             </div>
-            <div className="flex justify-end gap-2 pt-2">
+            <div className="space-y-2 max-h-60 overflow-y-auto">
+              {availableProjects.map((proj) => {
+                const checked = selectedProjects.includes(proj);
+                return (
+                  <label
+                    key={proj}
+                    className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-[#1a1d24] border border-gray-800 text-xs text-gray-200 cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleProject(proj)}
+                      className="rounded border-gray-600"
+                    />
+                    <span>{proj}</span>
+                  </label>
+                );
+              })}
+            </div>
+            <div className="flex justify-end gap-2">
               <button
                 type="button"
-                onClick={copyToClipboard}
-                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs bg-gray-700 hover:bg-gray-600 text-white"
+                onClick={() => setPermTarget(null)}
+                className="px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:bg-gray-800"
               >
-                {hasCopied ? <Check size={13} /> : <Copy size={13} />}
-                <span>{hasCopied ? '已复制' : '复制信息'}</span>
+                取消
               </button>
               <button
                 type="button"
-                onClick={() => setGeneratedResult(null)}
-                className="px-3.5 py-1.5 rounded-lg text-xs bg-blue-600 hover:bg-blue-500 text-white"
+                disabled={savingPerm}
+                onClick={handleSavePermissions}
+                className="px-4 py-1.5 rounded-lg text-xs bg-blue-600 hover:bg-blue-500 text-white font-medium"
               >
-                完成
+                {savingPerm ? '保存中...' : '保存授权'}
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* 删除用户确认弹窗 */}
       {deleteTarget && (
         <div className="fixed inset-0 bg-black/65 flex items-center justify-center z-50 p-4">
-          <div className="bg-[#252830] border border-gray-700 rounded-2xl w-full max-w-sm p-6 shadow-2xl space-y-4">
-            <div className="flex items-center gap-2 text-rose-400 text-sm font-bold">
-              <Trash2 size={16} />
-              <span>确认删除账号「{deleteTarget.name || deleteTarget.username}」？</span>
-            </div>
-            <p className="text-xs text-gray-400">删除后该账号将无法继续登录系统。</p>
+          <div className="bg-[#252830] border border-gray-700 rounded-2xl w-full max-w-sm p-5 shadow-2xl space-y-4">
+            <h3 className="text-sm font-bold text-white">确认删除成员账号</h3>
+            <p className="text-xs text-gray-300 leading-relaxed">
+              确定删除账号 <span className="text-rose-400 font-semibold">@{deleteTarget.username}</span> 吗？删除后无法恢复。
+            </p>
             <div className="flex justify-end gap-2">
-              <button type="button" onClick={() => setDeleteTarget(null)} className="px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:bg-gray-800">
+              <button
+                type="button"
+                onClick={() => setDeleteTarget(null)}
+                className="px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:bg-gray-800"
+              >
                 取消
               </button>
-              <button type="button" onClick={handleConfirmDelete} className="px-3.5 py-1.5 rounded-lg text-xs bg-rose-600 hover:bg-rose-500 text-white">
+              <button
+                type="button"
+                onClick={handleConfirmDeleteUser}
+                className="px-4 py-1.5 rounded-lg text-xs bg-rose-600 hover:bg-rose-500 text-white font-medium"
+              >
                 确认删除
               </button>
             </div>
@@ -429,7 +1604,133 @@ export default function UserManagement() {
         </div>
       )}
 
-      <AdminThemeModal open={themeModalOpen} onClose={() => setThemeModalOpen(false)} />
+      {selectedMemContent && (
+        <div className="fixed inset-0 bg-black/65 flex items-center justify-center z-50 p-4">
+          <div className="bg-[#252830] border border-gray-700 rounded-2xl w-full max-w-xl p-5 shadow-2xl space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-sm font-bold text-white truncate" title={selectedMemContent.title}>
+                {selectedMemContent.title}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setSelectedMemContent(null)}
+                className="text-gray-400 hover:text-white shrink-0"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <pre className="bg-[#1a1d24] border border-gray-800 rounded-xl p-3 text-xs text-gray-200 whitespace-pre-wrap max-h-80 overflow-y-auto">
+              {selectedMemContent.content}
+            </pre>
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => setSelectedMemContent(null)}
+                className="px-3.5 py-1.5 rounded-lg text-xs bg-blue-600 hover:bg-blue-500 text-white"
+              >
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {logoPicker &&
+        (() => {
+          const target = uniqueThemes.find((item) => item.id === logoPicker.id);
+          if (!target) return null;
+          const currentIcon = getThemeLogo(target).icon;
+          return (
+            <div
+              className="fixed z-[60] w-64 rounded-xl border border-gray-600 bg-[#1a1d24] p-2 shadow-2xl"
+              style={{
+                top: Math.min(logoPicker.top, window.innerHeight - 210),
+                left: Math.min(logoPicker.left, window.innerWidth - 272),
+              }}
+            >
+              <div className="flex items-center justify-between px-1 pb-2">
+                <span className="text-[11px] text-gray-400">Logo 图标库（12 款）</span>
+                <button
+                  type="button"
+                  onClick={() => setLogoPicker(null)}
+                  className="text-gray-500 hover:text-white"
+                  title="关闭"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+              <div className="grid grid-cols-4 gap-1.5">
+                {LOGO_ICONS.map((icon: LogoIcon) => (
+                  <button
+                    key={icon}
+                    type="button"
+                    title={LOGO_ICON_LABELS[icon]}
+                    onClick={() => {
+                      void saveThemeLogo(target, { icon });
+                      setLogoPicker(null);
+                    }}
+                    className={`h-9 rounded-lg flex items-center justify-center ${
+                      currentIcon === icon ? 'bg-blue-600/30 text-blue-300' : 'text-gray-300 hover:bg-[#323640]'
+                    }`}
+                  >
+                    {renderThemeLogo({ ...target, logo: { ...getThemeLogo(target), icon } }, 16)}
+                  </button>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
+
+      {themeImportOpen && (
+        <div className="fixed inset-0 bg-black/65 flex items-center justify-center z-50 p-4">
+          <div className="bg-[#252830] border border-gray-700 rounded-2xl w-full max-w-lg p-5 shadow-2xl space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold text-white">导入主题 JSON</h3>
+              <button
+                type="button"
+                onClick={() => setThemeImportOpen(false)}
+                className="text-gray-400 hover:text-white"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <p className="text-[11px] text-gray-400">
+              支持粘贴主题 JSON，或先点击上方「选择 JSON 文件」载入内容。发布后所有账号均可在主题菜单切换。
+            </p>
+            <textarea
+              rows={12}
+              value={themeImportText}
+              onChange={(e) => setThemeImportText(e.target.value)}
+              placeholder={'{\n  "name": "主题名称",\n  "description": "主题描述",\n  "logo": { "icon": "ring", "fg": "#ffffff", "bg": "#2563eb" },\n  "colors": { "--bg-base": "#1e2128" }\n}'}
+              className="w-full bg-[#14161b] border border-gray-700 rounded-xl p-3 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-500"
+            />
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setThemeImportOpen(false)}
+                className="px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:bg-gray-800"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                disabled={themeBusy}
+                onClick={() => void handleImportThemeJson()}
+                className="px-4 py-1.5 rounded-lg text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white font-medium"
+              >
+                {themeBusy ? '导入中...' : '导入并发布'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <AdminThemeModal
+        key={themeEditTarget ?? '__new__'}
+        open={themeModalOpen}
+        onClose={() => setThemeModalOpen(false)}
+        initialThemeId={themeEditTarget}
+      />
     </div>
   );
 }

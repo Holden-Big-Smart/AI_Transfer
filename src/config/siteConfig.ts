@@ -14,7 +14,7 @@ export const ROUTE_TITLE_RULES: RouteTitleRule[] = [
   { pathPrefix: '/notes', label: '笔记' },
   { pathPrefix: '/screen-share', label: '投屏' },
   { pathPrefix: '/ai-copilot', label: '助手' },
-  { pathPrefix: '/users', label: '成员' },
+  { pathPrefix: '/users', label: '管理' },
   { pathPrefix: '/login', label: '登录' }
 ];
 

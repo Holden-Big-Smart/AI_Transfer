@@ -75,7 +75,7 @@ const getFileTypeLabel = (file: FileNode): string => {
 };
 
 export default function FileCenter() {
-  const { currentUser, theme } = useAuthStore();
+  const { currentUser } = useAuthStore();
   const {
     files = [],
     currentPath = [],
@@ -488,8 +488,7 @@ export default function FileCenter() {
   };
 
   const freeBytes = Math.max(0, storageStats.totalQuotaBytes - storageStats.usedBytes);
-  const freeSliceColor =
-    theme === 'light' ? '#e5e7eb' : theme === 'eyecare' ? '#dcd4c2' : '#374151';
+  const freeSliceColor = 'var(--chart-free, #374151)';
 
   const storageChartData = [
     ...(storageStats.filesBytes > 0
@@ -543,7 +542,10 @@ export default function FileCenter() {
         >
           {/* 存储空间仪表盘（区分文件蓝 / 笔记绿 / 剩余空间） */}
           <div className="bg-[#2a2d35] p-4 md:p-5 rounded-lg shadow-lg shrink-0">
-            <h2 className="text-sm md:text-base font-semibold mb-3 border-b border-gray-600 pb-2">
+            <h2
+              style={{ color: 'var(--text-primary)', borderColor: 'var(--border-main)' }}
+              className="text-sm md:text-base font-semibold mb-3 border-b pb-2"
+            >
               存储空间使用情况
             </h2>
             <div className="h-36 md:h-40 relative">
@@ -559,7 +561,11 @@ export default function FileCenter() {
                     paddingAngle={storageStats.filesBytes > 0 && storageStats.notesBytes > 0 ? 1 : 0}
                   >
                     {storageChartData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} />
+                      <Cell
+                        key={`cell-${index}`}
+                        fill={entry.color}
+                        style={entry.name === '剩余空间' ? { fill: 'var(--chart-free, #374151)' } : undefined}
+                      />
                     ))}
                   </Pie>
                   <Tooltip
@@ -579,10 +585,13 @@ export default function FileCenter() {
                 </PieChart>
               </ResponsiveContainer>
               <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                <span className="text-base md:text-lg font-bold text-gray-100">
+                <span
+                  style={{ color: 'var(--text-primary)' }}
+                  className="text-base md:text-lg font-bold"
+                >
                   {formatBytes(storageStats.usedBytes)}
                 </span>
-                <span className="text-[11px] text-gray-400">
+                <span style={{ color: 'var(--text-secondary)' }} className="text-[11px]">
                   / {formatBytes(storageStats.totalQuotaBytes)} (
                   {formatQuotaPercent(storageStats.usedBytes, storageStats.totalQuotaBytes)})
                 </span>
@@ -590,22 +599,31 @@ export default function FileCenter() {
             </div>
 
             {/* 文件与笔记占用分项图例 */}
-            <div className="grid grid-cols-2 gap-2 mt-3 pt-2.5 border-t border-gray-700/60 text-[11px]">
-              <div className="flex items-center justify-between bg-[#1e2128] px-2.5 py-1.5 rounded-lg">
-                <span className="flex items-center gap-1.5 text-gray-400">
+            <div
+              style={{ borderColor: 'var(--border-subtle)' }}
+              className="grid grid-cols-2 gap-2 mt-3 pt-2.5 border-t text-[11px]"
+            >
+              <div
+                style={{ backgroundColor: 'var(--bg-base)' }}
+                className="flex items-center justify-between px-2.5 py-1.5 rounded-lg"
+              >
+                <span style={{ color: 'var(--text-secondary)' }} className="flex items-center gap-1.5">
                   <span className="w-2.5 h-2.5 rounded-full bg-blue-500 shrink-0" />
                   <span>文件</span>
                 </span>
-                <span className="font-semibold text-gray-200 truncate ml-1">
+                <span style={{ color: 'var(--text-primary)' }} className="font-semibold truncate ml-1">
                   {formatBytes(storageStats.filesBytes)}
                 </span>
               </div>
-              <div className="flex items-center justify-between bg-[#1e2128] px-2.5 py-1.5 rounded-lg">
-                <span className="flex items-center gap-1.5 text-gray-400">
+              <div
+                style={{ backgroundColor: 'var(--bg-base)' }}
+                className="flex items-center justify-between px-2.5 py-1.5 rounded-lg"
+              >
+                <span style={{ color: 'var(--text-secondary)' }} className="flex items-center gap-1.5">
                   <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0" />
                   <span>笔记</span>
                 </span>
-                <span className="font-semibold text-gray-200 truncate ml-1">
+                <span style={{ color: 'var(--text-primary)' }} className="font-semibold truncate ml-1">
                   {formatBytes(storageStats.notesBytes)}
                 </span>
               </div>
