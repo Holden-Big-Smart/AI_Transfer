@@ -6,9 +6,6 @@ import {
   Bot,
   NotebookPen,
   MonitorPlay,
-  ShieldCheck,
-  UserCheck,
-  Eye,
   Users,
   KeyRound,
   LogOut,
@@ -19,6 +16,7 @@ import {
 } from 'lucide-react';
 import { useAuthStore, type ThemeMode } from '../../store/useAuthStore';
 import { useNoteStore } from '../../store/useNoteStore';
+import AvatarModal from '../AvatarModal';
 
 const THEME_OPTIONS: Array<{ value: ThemeMode; label: string; desc: string }> = [
   { value: 'dark', label: '暗色风格', desc: '深邃护眼默认主题' },
@@ -33,6 +31,7 @@ export default function Sidebar() {
   const location = useLocation();
 
   const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false);
+  const [avatarModalOpen, setAvatarModalOpen] = useState(false);
   const menuContainerRef = useRef<HTMLDivElement>(null);
 
   const canUseAi = Boolean(currentUser && currentUser.role !== 'guest');
@@ -201,18 +200,31 @@ export default function Sidebar() {
             <LogOut size={17} />
           </button>
 
-          <div
-            className="w-9 h-9 rounded-full bg-gray-800 border border-gray-700 flex items-center justify-center text-gray-300 mt-1"
-            title={`${currentUser?.name || '用户'} (${currentUser?.role || 'user'})`}
+          <button
+            type="button"
+            disabled={!currentUser || currentUser.role === 'guest'}
+            onClick={() => {
+              if (currentUser && currentUser.role !== 'guest') {
+                setAvatarModalOpen(true);
+              }
+            }}
+            title={currentUser && currentUser.role !== 'guest' ? '点击设置个人头像' : undefined}
+            className="relative w-8 h-8 rounded-lg overflow-hidden bg-blue-600/20 border border-gray-700 flex items-center justify-center text-xs font-bold text-blue-300 shrink-0 disabled:cursor-default"
           >
-            {currentUser?.role === 'admin' ? (
-              <ShieldCheck size={16} className="text-blue-400" />
-            ) : currentUser?.role === 'guest' ? (
-              <Eye size={16} className="text-amber-400" />
-            ) : (
-              <UserCheck size={16} className="text-emerald-400" />
+            <span className="pointer-events-none select-none">
+              {(currentUser?.name || currentUser?.username || '访').slice(0, 1)}
+            </span>
+            {currentUser?.avatarUrl && (
+              <img
+                src={currentUser.avatarUrl}
+                alt={currentUser.name || currentUser.username || '头像'}
+                className="absolute inset-0 w-full h-full object-cover"
+                onError={(e) => {
+                  (e.currentTarget as HTMLImageElement).style.display = 'none';
+                }}
+              />
             )}
-          </div>
+          </button>
         </div>
 
         {/* 主题选择弹出面板 */}
@@ -306,6 +318,8 @@ export default function Sidebar() {
           <span>投屏</span>
         </NavLink>
       </nav>
+
+      <AvatarModal open={avatarModalOpen} onClose={() => setAvatarModalOpen(false)} />
     </div>
   );
 }

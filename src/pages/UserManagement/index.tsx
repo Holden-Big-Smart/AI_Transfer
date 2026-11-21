@@ -161,10 +161,22 @@ export default function UserManagement() {
           {(users || []).map((u) => (
             <div key={u.id} className="grid grid-cols-12 gap-4 px-6 py-4 items-center hover:bg-[#2b2f3a] transition-colors">
               <div className="col-span-3 flex items-center gap-2.5">
-                <div className={`w-8 h-8 rounded-lg flex items-center justify-center font-bold text-xs ${
+                <div className={`relative w-8 h-8 rounded-lg overflow-hidden flex items-center justify-center font-bold text-xs shrink-0 ${
                   u.role === 'admin' ? 'bg-green-600/20 text-green-400' : 'bg-blue-600/20 text-blue-400'
                 }`}>
-                  {(u.name || u.username || '?').slice(0, 1)}
+                  <span className="pointer-events-none select-none">
+                    {(u.name || u.username || '?').slice(0, 1)}
+                  </span>
+                  {u.avatarUrl && (
+                    <img
+                      src={u.avatarUrl}
+                      alt={u.name || u.username || '头像'}
+                      className="absolute inset-0 w-full h-full object-cover"
+                      onError={(e) => {
+                        (e.currentTarget as HTMLImageElement).style.display = 'none';
+                      }}
+                    />
+                  )}
                 </div>
                 <div>
                   <div className="font-semibold text-gray-200">{u.name}</div>

@@ -15,6 +15,7 @@ export interface UserAccount {
   allowedProjects: string[];
   theme?: ThemeMode;
   noteAutoSave?: boolean;
+  avatarUrl?: string | null;
   createdAt?: string;
 }
 
@@ -34,6 +35,8 @@ interface AuthStore {
   deleteUser: (id: string) => Promise<void>;
   updateUserProjects: (userId: string, allowedProjects: string[]) => Promise<void>;
   setAllowedProjects: (projects: string[]) => void;
+  uploadAvatar: (file: File) => Promise<string>;
+  resetAvatar: () => Promise<void>;
   changePassword: (newPass: string) => Promise<void>;
 }
 
@@ -277,6 +280,56 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       const nextCurrent = { ...state.currentUser, allowedProjects: projects };
       localStorage.setItem('app_current_user', JSON.stringify(nextCurrent));
       return { currentUser: nextCurrent };
+    });
+  },
+
+  uploadAvatar: async (file: File) => {
+    const token = localStorage.getItem('access_token');
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await fetch('/api/auth/avatar', {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: formData
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || '上传头像失败');
+    }
+    const data = await res.json();
+    const nextUrl = String(data.avatarUrl || '');
+    set((state) => {
+      if (!state.currentUser) return state;
+      const uid = state.currentUser.id;
+      const nextUsers = state.users.map((u) =>
+        u.id === uid ? { ...u, avatarUrl: nextUrl } : u
+      );
+      const nextCurrent = { ...state.currentUser, avatarUrl: nextUrl };
+      localStorage.setItem('app_current_user', JSON.stringify(nextCurrent));
+      return { users: nextUsers, currentUser: nextCurrent };
+    });
+    return nextUrl;
+  },
+
+  resetAvatar: async () => {
+    const token = localStorage.getItem('access_token');
+    const res = await fetch('/api/auth/avatar', {
+      method: 'DELETE',
+      headers: token ? { Authorization: `Bearer ${token}` } : {}
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || '重置头像失败');
+    }
+    set((state) => {
+      if (!state.currentUser) return state;
+      const uid = state.currentUser.id;
+      const nextUsers = state.users.map((u) =>
+        u.id === uid ? { ...u, avatarUrl: null } : u
+      );
+      const nextCurrent = { ...state.currentUser, avatarUrl: null };
+      localStorage.setItem('app_current_user', JSON.stringify(nextCurrent));
+      return { users: nextUsers, currentUser: nextCurrent };
     });
   },
 
