@@ -801,3 +801,8 @@ html, body, #root {
 [data-theme="eyecare"] .hover\:bg-gray-700\/80:hover {
   background-color: var(--bg-hover-strong);
 }
+
+[data-theme="light"] .bg-\[\#1f2229\],
+[data-theme="eyecare"] .bg-\[\#1f2229\] {
+  background-color: var(--bg-panel);
+}

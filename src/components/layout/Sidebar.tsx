@@ -25,7 +25,7 @@ const THEME_OPTIONS: Array<{ value: ThemeMode; label: string; desc: string }> = 
 ];
 
 export default function Sidebar() {
-  const { currentUser, theme, noteAutoSave, setTheme, logout } = useAuthStore();
+  const { currentUser, theme, customThemes, fetchThemes, noteAutoSave, setTheme, logout } = useAuthStore();
   const { hasUnsavedChanges, requestProtectedAction } = useNoteStore();
   const navigate = useNavigate();
   const location = useLocation();
@@ -33,6 +33,10 @@ export default function Sidebar() {
   const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false);
   const [avatarModalOpen, setAvatarModalOpen] = useState(false);
   const menuContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (currentUser) fetchThemes();
+  }, [currentUser, fetchThemes]);
 
   const canUseAi = Boolean(currentUser && currentUser.role !== 'guest');
 
@@ -275,6 +279,42 @@ export default function Sidebar() {
                     </div>
                   </div>
                   {active && <Check size={14} className="text-blue-500" />}
+                </button>
+              );
+            })}
+            {customThemes.map((ct) => {
+              const active = theme === ct.id;
+              return (
+                <button
+                  key={ct.id}
+                  type="button"
+                  onClick={() => {
+                    setTheme(ct.id);
+                    setIsThemeMenuOpen(false);
+                  }}
+                  style={
+                    active
+                      ? { backgroundColor: 'var(--bg-hover)', color: 'var(--text-primary)' }
+                      : { color: 'var(--text-secondary)' }
+                  }
+                  className="w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-left transition-colors"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <span
+                      className="w-3.5 h-3.5 rounded-full border shrink-0"
+                      style={{
+                        backgroundColor: ct.colors['--bg-surface'] || '#3b82f6',
+                        borderColor: ct.colors['--text-primary'] || '#9ca3af',
+                      }}
+                    />
+                    <div className="truncate">
+                      <div className="text-xs font-medium truncate">{ct.name}</div>
+                      <div style={{ color: 'var(--text-muted)' }} className="text-[10px] truncate">
+                        {ct.description || '自定义全局风格'}
+                      </div>
+                    </div>
+                  </div>
+                  {active && <Check size={14} className="text-blue-500 shrink-0" />}
                 </button>
               );
             })}

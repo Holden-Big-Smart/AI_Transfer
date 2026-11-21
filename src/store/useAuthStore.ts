@@ -3,7 +3,17 @@ import { create } from 'zustand';
 import { api } from '../utils/api';
 
 export type UserRole = 'admin' | 'user' | 'guest';
-export type ThemeMode = 'dark' | 'light' | 'eyecare';
+export type ThemeMode = 'dark' | 'light' | 'eyecare' | (string & {});
+
+export interface CustomThemeItem {
+  id: string;
+  name: string;
+  description?: string;
+  baseMode: 'dark' | 'light' | 'eyecare';
+  colors: Record<string, string>;
+  updatedAt?: string;
+  isBuiltin?: boolean;
+}
 
 export interface UserAccount {
   id: string;
@@ -23,10 +33,29 @@ interface AuthStore {
   users: UserAccount[];
   currentUser: UserAccount | null;
   theme: ThemeMode;
+  customThemes: CustomThemeItem[];
   noteAutoSave: boolean;
   fetchUsers: () => Promise<void>;
   syncCurrentUser: () => Promise<void>;
   setTheme: (theme: ThemeMode) => Promise<void>;
+  fetchThemes: () => Promise<void>;
+  importCustomTheme: (payload: {
+    id?: string;
+    name: string;
+    description?: string;
+    baseMode: 'dark' | 'light' | 'eyecare';
+    colors: Record<string, string>;
+  }) => Promise<void>;
+  updateCustomTheme: (
+    themeId: string,
+    payload: {
+      name: string;
+      description?: string;
+      baseMode: 'dark' | 'light' | 'eyecare';
+      colors: Record<string, string>;
+    }
+  ) => Promise<void>;
+  deleteCustomTheme: (themeId: string) => Promise<void>;
   setNoteAutoSave: (enabled: boolean) => Promise<void>;
   login: (username: string, password: string) => Promise<{ success: boolean; message?: string; mustChange?: boolean }>;
   logout: () => void;
@@ -40,22 +69,59 @@ interface AuthStore {
   changePassword: (newPass: string) => Promise<void>;
 }
 
-const VALID_THEMES: ThemeMode[] = ['dark', 'light', 'eyecare'];
+const VALID_THEMES = ['dark', 'light', 'eyecare'] as const;
+type BuiltinTheme = (typeof VALID_THEMES)[number];
+
+const isBuiltinTheme = (val: string): val is BuiltinTheme =>
+  (VALID_THEMES as readonly string[]).includes(val);
+
+let runtimeCustomThemes: CustomThemeItem[] = [];
 
 export function sanitizeTheme(val: unknown): ThemeMode {
-  if (typeof val === 'string' && (VALID_THEMES as string[]).includes(val)) {
-    return val as ThemeMode;
-  }
-  return 'dark';
+  if (typeof val !== 'string') return 'dark';
+  const trimmed = val.trim();
+  return trimmed || 'dark';
 }
 
-export function applyThemeToDom(theme: ThemeMode) {
-  const safe = sanitizeTheme(theme);
-  if (typeof document !== 'undefined') {
-    document.documentElement.setAttribute('data-theme', safe);
+const CUSTOM_THEME_VAR_KEYS = [
+  '--bg-base',
+  '--bg-surface',
+  '--bg-surface-alt',
+  '--bg-sidebar',
+  '--bg-panel',
+  '--bg-input',
+  '--bg-hover',
+  '--bg-hover-strong',
+  '--text-primary',
+  '--text-secondary',
+  '--text-muted',
+  '--text-subtle',
+  '--border-main',
+  '--border-subtle',
+];
+
+export function applyThemeToDom(
+  theme: ThemeMode,
+  customThemes: CustomThemeItem[] = runtimeCustomThemes
+) {
+  if (typeof document === 'undefined') return;
+  const root = document.documentElement;
+  for (const key of CUSTOM_THEME_VAR_KEYS) {
+    root.style.removeProperty(key);
+  }
+  const found = customThemes.find((item) => item.id === theme);
+  if (found) {
+    root.setAttribute('data-theme', found.baseMode || 'dark');
+    for (const [key, value] of Object.entries(found.colors || {})) {
+      if (CUSTOM_THEME_VAR_KEYS.includes(key) && typeof value === 'string' && value.trim()) {
+        root.style.setProperty(key, value.trim());
+      }
+    }
+  } else {
+    root.setAttribute('data-theme', isBuiltinTheme(theme) ? theme : 'dark');
   }
   try {
-    localStorage.setItem('app_active_theme', safe);
+    localStorage.setItem('app_active_theme', theme);
   } catch {
     // ignore
   }
@@ -123,6 +189,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
   users: [],
   currentUser: initialUser,
   theme: initialTheme,
+  customThemes: [],
   noteAutoSave: initialAutoSave,
 
   fetchUsers: async () => {
@@ -138,7 +205,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       const normalized = normalizeUser(me);
       localStorage.setItem('app_current_user', JSON.stringify(normalized));
       const nextTheme = sanitizeTheme(normalized.theme || state.theme);
-      applyThemeToDom(nextTheme);
+      applyThemeToDom(nextTheme, get().customThemes);
       set({
         currentUser: normalized,
         theme: nextTheme,
@@ -151,22 +218,97 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
 
   setTheme: async (nextTheme: ThemeMode) => {
     const safe = sanitizeTheme(nextTheme);
-    const current = get().currentUser;
-    applyThemeToDom(safe);
+    const customThemes = get().customThemes;
+    const isCustom = customThemes.some((item) => item.id === safe);
+    applyThemeToDom(safe, customThemes);
     set({ theme: safe });
+    const current = get().currentUser;
     if (current) {
       localStorage.setItem(getUserThemeStorageKey(current), safe);
       if (current.role !== 'guest') {
         const updated = { ...current, theme: safe };
         localStorage.setItem('app_current_user', JSON.stringify(updated));
         set({ currentUser: updated });
-        try {
-          await api.auth.updateTheme(safe);
-        } catch {
-          // ignore
+        if (!isCustom && isBuiltinTheme(safe)) {
+          try {
+            await api.auth.updateTheme(safe);
+          } catch {
+            // ignore
+          }
         }
       }
     }
+  },
+
+  fetchThemes: async () => {
+    const token = localStorage.getItem('access_token');
+    if (!token) return;
+    try {
+      const res = await fetch('/api/themes', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      const list: CustomThemeItem[] = Array.isArray(data.themes) ? data.themes : [];
+      runtimeCustomThemes = list;
+      set({ customThemes: list });
+      applyThemeToDom(get().theme, list);
+    } catch {
+      // ignore
+    }
+  },
+
+  importCustomTheme: async (payload) => {
+    const token = localStorage.getItem('access_token');
+    const res = await fetch('/api/themes/import', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+      },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || '导入风格失败');
+    await get().fetchThemes();
+  },
+
+  updateCustomTheme: async (themeId, payload) => {
+    const token = localStorage.getItem('access_token');
+    const res = await fetch(`/api/themes/${encodeURIComponent(themeId)}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+      },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || '更新风格失败');
+    await get().fetchThemes();
+  },
+
+  deleteCustomTheme: async (themeId) => {
+    const token = localStorage.getItem('access_token');
+    const res = await fetch(`/api/themes/${encodeURIComponent(themeId)}`, {
+      method: 'DELETE',
+      headers: token ? { Authorization: `Bearer ${token}` } : {}
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || '删除风格失败');
+    const nextList = get().customThemes.filter((item) => item.id !== themeId);
+    const current = get().currentUser;
+    const currentWasCustom = get().theme === themeId;
+    const nextTheme: ThemeMode = currentWasCustom ? 'dark' : get().theme;
+    runtimeCustomThemes = nextList;
+    if (current && current.theme === themeId) {
+      const updated = { ...current, theme: 'dark' as ThemeMode };
+      localStorage.setItem('app_current_user', JSON.stringify(updated));
+      localStorage.setItem(getUserThemeStorageKey(current), 'dark');
+      set({ currentUser: updated });
+    }
+    set({ customThemes: nextList, theme: nextTheme });
+    applyThemeToDom(nextTheme, nextList);
   },
 
   setNoteAutoSave: async (enabled: boolean) => {
@@ -194,7 +336,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       const normalized = normalizeUser(res.user);
       localStorage.setItem('app_current_user', JSON.stringify(normalized));
       const nextTheme = sanitizeTheme(normalized.theme || 'dark');
-      applyThemeToDom(nextTheme);
+      applyThemeToDom(nextTheme, get().customThemes);
       set({
         currentUser: normalized,
         theme: nextTheme,
@@ -226,7 +368,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       noteAutoSave: false
     };
     localStorage.setItem('app_current_user', JSON.stringify(guestUser));
-    applyThemeToDom('dark');
+    applyThemeToDom('dark', get().customThemes);
     set({ currentUser: guestUser, theme: 'dark', noteAutoSave: false });
   },
 

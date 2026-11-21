@@ -2,9 +2,10 @@
 import { useState, useEffect } from 'react';
 import {
   Users, UserPlus, Trash2, KeyRound, Copy, Check,
-  ShieldCheck, X, CheckSquare, Square, SlidersHorizontal
+  ShieldCheck, X, CheckSquare, Square, SlidersHorizontal, Palette
 } from 'lucide-react';
 import { useAuthStore, type UserAccount } from '../../store/useAuthStore';
+import AdminThemeModal from '../../components/AdminThemeModal';
 
 const BASE_PROJECTS = ['通用公用库', 'Cyber_EcoTank', 'RPA模块分析'];
 
@@ -20,6 +21,7 @@ export default function UserManagement() {
   const [generatedResult, setGeneratedResult] = useState<{ username: string; pass: string } | null>(null);
   const [hasCopied, setHasCopied] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<UserAccount | null>(null);
+  const [themeModalOpen, setThemeModalOpen] = useState(false);
 
   // 调整成员项目权限弹窗状态
   const [editingUser, setEditingUser] = useState<UserAccount | null>(null);
@@ -138,14 +140,26 @@ export default function UserManagement() {
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={() => setIsAddModalOpen(true)}
-          className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs px-3.5 py-2 rounded-xl transition-colors shadow-lg shadow-blue-600/20"
-        >
-          <UserPlus size={15} />
-          <span>创建用户账号</span>
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setIsAddModalOpen(true)}
+            className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs px-3.5 py-2 rounded-xl transition-colors shadow-lg shadow-blue-600/20"
+          >
+            <UserPlus size={15} />
+            <span>创建用户账号</span>
+          </button>
+          {currentUser?.role === 'admin' && (
+            <button
+              type="button"
+              onClick={() => setThemeModalOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#1a1d24] hover:bg-[#232731] border border-gray-700 text-xs font-medium text-gray-200"
+            >
+              <Palette size={14} className="text-blue-400" />
+              <span>风格库管理</span>
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="bg-[#252830] border border-gray-700/80 rounded-2xl overflow-hidden shadow-xl">
@@ -215,11 +229,11 @@ export default function UserManagement() {
                 )}
               </div>
 
-              <div className="col-span-2 w-28 flex items-center justify-end gap-2">
+              <div className="col-span-2 flex items-center justify-end gap-1.5">
                 <button
                   type="button"
                   onClick={() => openProjectEditor(u)}
-                  className="inline-flex items-center justify-center gap-1 px-2.5 py-1 rounded-lg bg-blue-600/15 hover:bg-blue-600/25 text-blue-300 border border-blue-500/30 text-[11px] shrink-0"
+                  className="inline-flex items-center justify-center gap-1 px-2 py-1 rounded-lg bg-blue-600/15 hover:bg-blue-600/25 text-blue-600 border border-blue-500/30 text-[11px] shrink-0"
                   title="调整该项目成员权限"
                 >
                   <SlidersHorizontal size={12} />
@@ -229,13 +243,13 @@ export default function UserManagement() {
                   <button
                     type="button"
                     onClick={() => setDeleteTarget(u)}
-                    className="w-7 h-7 inline-flex items-center justify-center rounded-lg text-gray-400 hover:text-rose-400 hover:bg-rose-500/10 shrink-0"
+                    className="w-6 h-6 inline-flex items-center justify-center rounded-lg text-gray-400 hover:text-rose-500 hover:bg-rose-500/10 shrink-0"
                     title="删除账号"
                   >
-                    <Trash2 size={14} />
+                    <Trash2 size={13} />
                   </button>
                 ) : (
-                  <span className="w-7 h-7 inline-block shrink-0 invisible" aria-hidden="true" />
+                  <span className="w-6 h-6 inline-block shrink-0 invisible" aria-hidden="true" />
                 )}
               </div>
             </div>
@@ -414,6 +428,8 @@ export default function UserManagement() {
           </div>
         </div>
       )}
+
+      <AdminThemeModal open={themeModalOpen} onClose={() => setThemeModalOpen(false)} />
     </div>
   );
 }
