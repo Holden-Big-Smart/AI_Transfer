@@ -174,7 +174,7 @@ export default function Sidebar() {
           <button
             type="button"
             onClick={() => setIsThemeMenuOpen((prev) => !prev)}
-            className="w-10 h-10 rounded-xl bg-gray-800/70 hover:bg-gray-700/80 flex items-center justify-center transition-colors"
+            style={{ backgroundColor: "var(--bg-hover)", borderColor: "var(--border-main)" }} className="w-10 h-10 rounded-xl border hover:opacity-85 flex items-center justify-center transition-colors"
             title="界面主题"
           >
             {renderThemeIcon(theme, 17)}
@@ -229,8 +229,18 @@ export default function Sidebar() {
 
         {/* 主题选择弹出面板 */}
         {isThemeMenuOpen && (
-          <div className="absolute left-16 bottom-16 w-56 bg-[#222630] border border-gray-700 rounded-xl shadow-2xl p-2 z-50">
-            <div className="px-2.5 py-1.5 text-[11px] font-semibold text-gray-400 border-b border-gray-700/70 mb-1">
+          <div
+            style={{
+              backgroundColor: 'var(--bg-surface)',
+              borderColor: 'var(--border-main)',
+              color: 'var(--text-primary)',
+            }}
+            className="absolute left-16 bottom-16 w-56 border rounded-xl shadow-2xl p-2 z-50"
+          >
+            <div
+              style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-muted)' }}
+              className="px-2.5 py-1.5 text-[11px] font-semibold border-b mb-1"
+            >
               界面外观主题
             </div>
             {THEME_OPTIONS.map((opt) => {
@@ -243,18 +253,28 @@ export default function Sidebar() {
                     setTheme(opt.value);
                     setIsThemeMenuOpen(false);
                   }}
-                  className={`w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-left transition-colors ${
-                    active ? 'bg-blue-600/20 text-blue-300' : 'text-gray-300 hover:bg-gray-700/50'
-                  }`}
+                  style={
+                    active
+                      ? {
+                          backgroundColor: 'var(--bg-hover)',
+                          color: 'var(--text-primary)',
+                        }
+                      : {
+                          color: 'var(--text-secondary)',
+                        }
+                  }
+                  className="w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-left transition-colors hover:opacity-90"
                 >
                   <div className="flex items-center gap-2.5">
                     {renderThemeIcon(opt.value, 15)}
                     <div>
                       <div className="text-xs font-medium">{opt.label}</div>
-                      <div className="text-[10px] text-gray-400">{opt.desc}</div>
+                      <div style={{ color: 'var(--text-muted)' }} className="text-[10px]">
+                        {opt.desc}
+                      </div>
                     </div>
                   </div>
-                  {active && <Check size={14} className="text-blue-400" />}
+                  {active && <Check size={14} className="text-blue-500" />}
                 </button>
               );
             })}

@@ -707,3 +707,97 @@ html, body, #root {
 [data-theme="eyecare"] .text-rose-200 {
   color: #b91c1c;
 }
+
+/* ============================================================================
+   6. 补充 AICopilot 侧栏、底栏、回答气泡及表单控件的三主题适配
+   ============================================================================ */
+[data-theme="light"] .bg-\[\#191c22\],
+[data-theme="eyecare"] .bg-\[\#191c22\] {
+  background-color: var(--bg-panel);
+}
+
+[data-theme="light"] .bg-\[\#252932\],
+[data-theme="eyecare"] .bg-\[\#252932\] {
+  background-color: var(--bg-surface);
+}
+
+[data-theme="light"] .bg-\[\#262b36\],
+[data-theme="eyecare"] .bg-\[\#262b36\] {
+  background-color: var(--bg-hover);
+}
+
+/* 亮色 / 护眼模式下表单控件与标题文字自适应（不影响 bg-blue-600 等实心彩色按钮上的 text-white） */
+[data-theme="light"] select.text-white,
+[data-theme="eyecare"] select.text-white,
+[data-theme="light"] input.text-white,
+[data-theme="eyecare"] input.text-white,
+[data-theme="light"] textarea.text-white,
+[data-theme="eyecare"] textarea.text-white,
+[data-theme="light"] span.text-white,
+[data-theme="eyecare"] span.text-white,
+[data-theme="light"] h1.text-white,
+[data-theme="eyecare"] h1.text-white,
+[data-theme="light"] h2.text-white,
+[data-theme="eyecare"] h2.text-white,
+[data-theme="light"] h3.text-white,
+[data-theme="eyecare"] h3.text-white,
+[data-theme="light"] div.text-white,
+[data-theme="eyecare"] div.text-white {
+  color: var(--text-primary);
+}
+
+/* 亮色 / 护眼模式下用户消息气泡（bg-blue-600/25）文字可读性 */
+[data-theme="light"] .text-blue-50,
+[data-theme="eyecare"] .text-blue-50 {
+  color: var(--text-primary);
+}
+
+[data-theme="light"] .text-blue-200,
+[data-theme="eyecare"] .text-blue-200 {
+  color: #1d4ed8;
+}
+
+/* ============================================================================
+   7. 侧边栏底部“界面外观主题”弹层菜单的三主题适配
+   ============================================================================ */
+[data-theme="light"] .theme-popover-menu,
+[data-theme="eyecare"] .theme-popover-menu,
+[data-theme="light"] [data-theme-popover="true"],
+[data-theme="eyecare"] [data-theme-popover="true"] {
+  background-color: var(--bg-surface) !important;
+  border-color: var(--border-main) !important;
+  color: var(--text-primary) !important;
+}
+
+[data-theme="light"] .theme-popover-menu button:hover,
+[data-theme="eyecare"] .theme-popover-menu button:hover,
+[data-theme="light"] [data-theme-popover="true"] button:hover,
+[data-theme="eyecare"] [data-theme-popover="true"] button:hover {
+  background-color: var(--bg-hover) !important;
+}
+
+/* 若 Sidebar.tsx 中主题菜单容器未带自定义类名，兜底适配侧边栏内弹出的浮层卡片 */
+[data-theme="light"] aside .fixed.z-50,
+[data-theme="eyecare"] aside .fixed.z-50,
+[data-theme="light"] aside .absolute.z-50,
+[data-theme="eyecare"] aside .absolute.z-50 {
+  background-color: var(--bg-surface);
+  border-color: var(--border-main);
+  color: var(--text-primary);
+}
+
+[data-theme="light"] .bg-\[\#222630\],
+[data-theme="eyecare"] .bg-\[\#222630\] {
+  background-color: var(--bg-surface);
+}
+
+[data-theme="light"] .bg-gray-800\/70,
+[data-theme="eyecare"] .bg-gray-800\/70 {
+  background-color: var(--bg-hover);
+  border: 1px solid var(--border-main);
+}
+
+[data-theme="light"] .hover\:bg-gray-700\/80:hover,
+[data-theme="eyecare"] .hover\:bg-gray-700\/80:hover {
+  background-color: var(--bg-hover-strong);
+}

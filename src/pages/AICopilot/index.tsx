@@ -56,6 +56,15 @@ interface KbFileEntry {
   updatedAt?: string;
 }
 
+interface MemoryItem {
+  filename: string;
+  title: string;
+  preview: string;
+  content: string;
+  size: number;
+  updatedAt?: string;
+}
+
 interface AttachedFilePayload {
   name: string;
   content_base64: string;
@@ -91,6 +100,13 @@ function splitThinkingContent(raw: string): { thinking: string; answer: string; 
     };
   }
   return { thinking: '', answer: text, isThinkingOpenDefault: false };
+}
+
+function stripThinkingForSave(raw: string): string {
+  return raw
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<think>[\s\S]*$/i, '')
+    .trim();
 }
 
 function AssistantBubble({
@@ -188,6 +204,15 @@ export default function AICopilot() {
   const [chunkCount, setChunkCount] = useState<number>(0);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
 
+  const [rightTab, setRightTab] = useState<'kb' | 'memory'>('kb');
+  const [memories, setMemories] = useState<MemoryItem[]>([]);
+  const [isLoadingMemories, setIsLoadingMemories] = useState<boolean>(false);
+  const [memModalOpen, setMemModalOpen] = useState<boolean>(false);
+  const [memDraftTitle, setMemDraftTitle] = useState<string>('');
+  const [memDraftContent, setMemDraftContent] = useState<string>('');
+  const [isSavingMemory, setIsSavingMemory] = useState<boolean>(false);
+  const [activePreviewMem, setActivePreviewMem] = useState<MemoryItem | null>(null);
+
   // 新建与删除项目弹窗状态
   const [isCreateProjOpen, setIsCreateProjOpen] = useState<boolean>(false);
   const [newProjectName, setNewProjectName] = useState<string>('');
@@ -264,6 +289,39 @@ export default function AICopilot() {
     }
   }, [selectedProject]);
 
+  const loadMemories = useCallback(async () => {
+    setIsLoadingMemories(true);
+    try {
+      const res = await fetch(
+        `${API_BASE_URL}/api/ai/memories?project=${encodeURIComponent(selectedProject)}`,
+        { headers: getTokenHeaders() }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showToast('err', data.detail || '加载我的记忆失败');
+        return;
+      }
+      const rawList = Array.isArray(data.memories)
+        ? data.memories
+        : Array.isArray(data.items)
+        ? data.items
+        : [];
+      const list: MemoryItem[] = rawList.map((m: any) => ({
+        filename: String(m.filename || m.file_name || m.name || ''),
+        title: String(m.title || m.filename || m.file_name || m.name || '未命名记忆'),
+        preview: String(m.preview || m.content || '').slice(0, 160),
+        content: String(m.content || ''),
+        size: Number(m.size || 0),
+        updatedAt: m.updatedAt || m.updated_at || undefined
+      }));
+      setMemories(list);
+    } catch {
+      showToast('err', '加载我的记忆网络异常');
+    } finally {
+      setIsLoadingMemories(false);
+    }
+  }, [selectedProject, showToast]);
+
   const loadMessages = useCallback(async (sessionId: string) => {
     if (!sessionId) {
       setMessages([]);
@@ -333,9 +391,10 @@ export default function AICopilot() {
     checkComputeStatus();
     loadSessions();
     loadKbTree();
+    loadMemories();
     const timer = window.setInterval(checkComputeStatus, 15000);
     return () => window.clearInterval(timer);
-  }, [selectedProject, checkComputeStatus, loadSessions, loadKbTree]);
+  }, [selectedProject, checkComputeStatus, loadSessions, loadKbTree, loadMemories]);
 
   const handleCreateProject = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -516,7 +575,7 @@ export default function AICopilot() {
   };
 
   const handleSaveToNote = async (rawContent: string, titleHint?: string) => {
-    const cleanContent = rawContent.replace(/<think>[\s\S]*?<\/think>/gi, '').trim() || rawContent;
+    const cleanContent = stripThinkingForSave(rawContent) || rawContent;
     const cleanTitle = (titleHint || `${selectedProject} - AI 整理总结`).slice(0, 60);
     try {
       const res = await fetch(`${API_BASE_URL}/api/ai/save-to-note`, {
@@ -531,6 +590,71 @@ export default function AICopilot() {
       showToast('ok', `已转存至在线笔记：「${cleanTitle}」`);
     } catch {
       showToast('err', '转存笔记网络异常');
+    }
+  };
+
+  const openSaveMemoryModal = (rawContent: string = '', titleHint?: string) => {
+    setMemDraftTitle((titleHint || `${selectedProject} - 记忆`).slice(0, 60));
+    setMemDraftContent(stripThinkingForSave(rawContent));
+    setActivePreviewMem(null);
+    setMemModalOpen(true);
+  };
+
+  const handleConfirmSaveMemory = async () => {
+    const title = memDraftTitle.trim() || `${selectedProject} - 记忆`;
+    const content = stripThinkingForSave(memDraftContent);
+    if (!content) {
+      showToast('err', '记忆内容不能为空');
+      return;
+    }
+    setIsSavingMemory(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/ai/memories/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getTokenHeaders() },
+        body: JSON.stringify({ project_name: selectedProject, title, content })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showToast('err', data.detail || '保存记忆失败');
+        return;
+      }
+      setMemModalOpen(false);
+      setMemDraftTitle('');
+      setMemDraftContent('');
+      await loadMemories();
+      showToast('ok', `已记入记忆：「${title}」`);
+    } catch {
+      showToast('err', '保存记忆网络异常');
+    } finally {
+      setIsSavingMemory(false);
+    }
+  };
+
+  const handleDeleteMemory = async (mem: MemoryItem) => {
+    if (!mem.filename) {
+      showToast('err', '记忆文件标识缺失，无法归档');
+      return;
+    }
+    if (!window.confirm(`确认归档删除记忆「${mem.title}」？`)) return;
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/ai/memories/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getTokenHeaders() },
+        body: JSON.stringify({ project_name: selectedProject, filename: mem.filename })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showToast('err', data.detail || '归档删除记忆失败');
+        return;
+      }
+      if (activePreviewMem?.filename === mem.filename) {
+        setActivePreviewMem(null);
+      }
+      await loadMemories();
+      showToast('ok', `已归档删除记忆「${mem.title}」`);
+    } catch {
+      showToast('err', '归档删除记忆网络异常');
     }
   };
 
@@ -896,15 +1020,26 @@ export default function AICopilot() {
                   {!msg.id.startsWith('tmp_') && (
                     <div className="flex items-center gap-2 mt-1 px-1 text-[11px] text-gray-500">
                       {!isUser && msg.content && (
-                        <button
-                          type="button"
-                          onClick={() => handleSaveToNote(msg.content)}
-                          className="inline-flex items-center gap-1 hover:text-blue-400 transition-colors"
-                          title="转存为在线笔记"
-                        >
-                          <BookmarkPlus size={12} />
-                          <span>转存笔记</span>
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => handleSaveToNote(msg.content)}
+                            className="inline-flex items-center gap-1 hover:text-blue-400 transition-colors"
+                            title="转存为在线笔记"
+                          >
+                            <BookmarkPlus size={12} />
+                            <span>转存笔记</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openSaveMemoryModal(msg.content)}
+                            className="inline-flex items-center gap-1 hover:text-indigo-400 transition-colors"
+                            title="记入我的记忆"
+                          >
+                            <FileText size={12} />
+                            <span>记入记忆</span>
+                          </button>
+                        </>
                       )}
                       <button
                         type="button"
@@ -1036,86 +1171,191 @@ export default function AICopilot() {
       <aside className="hidden lg:flex w-72 bg-[#191c22] border-l border-gray-800 flex-col shrink-0">
         <div className="p-3.5 border-b border-gray-800 flex items-center justify-between">
           <div className="flex items-center gap-1.5 text-xs font-semibold text-white">
-            <FolderOpen size={15} className="text-amber-400" />
-            <span>项目知识库与输出</span>
+            {rightTab === 'kb' ? (
+              <FolderOpen size={15} className="text-amber-400" />
+            ) : (
+              <Sparkles size={15} className="text-indigo-400" />
+            )}
+            <span>{rightTab === 'kb' ? '项目知识库与输出' : '我的记忆'}</span>
           </div>
+          {rightTab === 'kb' ? (
+            <button
+              type="button"
+              disabled={isSyncing || !isOnline}
+              onClick={handleSyncKb}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-blue-600/20 hover:bg-blue-600/30 disabled:opacity-40 text-blue-300 border border-blue-500/30 text-[11px]"
+            >
+              <RefreshCw size={12} className={isSyncing ? 'animate-spin' : ''} />
+              <span>{isSyncing ? '同步中' : '同步目录'}</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => openSaveMemoryModal()}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 text-[11px]"
+            >
+              <Plus size={12} />
+              <span>新建记忆</span>
+            </button>
+          )}
+        </div>
+
+        <div className="flex gap-1 px-3 py-2 border-b border-gray-800">
           <button
             type="button"
-            disabled={isSyncing || !isOnline}
-            onClick={handleSyncKb}
-            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-blue-600/20 hover:bg-blue-600/30 disabled:opacity-40 text-blue-300 border border-blue-500/30 text-[11px]"
+            onClick={() => setRightTab('kb')}
+            className={`flex-1 py-1.5 rounded-lg text-[11px] transition-colors ${
+              rightTab === 'kb'
+                ? 'bg-blue-600/20 text-blue-300 border border-blue-500/30 font-medium'
+                : 'text-gray-400 hover:text-gray-200 hover:bg-[#232731]'
+            }`}
           >
-            <RefreshCw size={12} className={isSyncing ? 'animate-spin' : ''} />
-            <span>{isSyncing ? '同步中' : '同步目录'}</span>
+            知识库/输出
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setRightTab('memory');
+              loadMemories();
+            }}
+            className={`flex-1 py-1.5 rounded-lg text-[11px] transition-colors ${
+              rightTab === 'memory'
+                ? 'bg-blue-600/20 text-blue-300 border border-blue-500/30 font-medium'
+                : 'text-gray-400 hover:text-gray-200 hover:bg-[#232731]'
+            }`}
+          >
+            我的记忆（{memories.length}）
           </button>
         </div>
 
         <div className="flex-1 overflow-y-auto p-3 space-y-4 text-xs">
-          <div>
-            <div className="text-[11px] font-medium text-gray-400 mb-2">
-              知识库文件（{kbFiles.length}）
-            </div>
-            {kbFiles.length === 0 ? (
-              <div className="text-[11px] text-gray-500 py-2">暂无知识库文件</div>
-            ) : (
-              <div className="space-y-1.5">
-                {kbFiles.map((f) => (
-                  <div
-                    key={f.relPath}
-                    className="flex items-center justify-between gap-2 bg-[#232731] rounded-lg px-2.5 py-1.5 border border-gray-800"
-                  >
-                    <div className="min-w-0">
-                      <div className="truncate text-gray-200 text-[11px]" title={f.relPath}>
-                        {f.name}
+          {rightTab === 'kb' ? (
+            <>
+              <div>
+                <div className="text-[11px] font-medium text-gray-400 mb-2">
+                  知识库文件（{kbFiles.length}）
+                </div>
+                {kbFiles.length === 0 ? (
+                  <div className="text-[11px] text-gray-500 py-2">暂无知识库文件</div>
+                ) : (
+                  <div className="space-y-1.5">
+                    {kbFiles.map((f) => (
+                      <div
+                        key={f.relPath}
+                        className="flex items-center justify-between gap-2 bg-[#232731] rounded-lg px-2.5 py-1.5 border border-gray-800"
+                      >
+                        <div className="min-w-0">
+                          <div className="truncate text-gray-200 text-[11px]" title={f.relPath}>
+                            {f.name}
+                          </div>
+                          <div className="text-[10px] text-gray-500">{formatBytes(f.size)}</div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleSoftDeleteKbFile(f.relPath, f.name)}
+                          className="text-gray-500 hover:text-rose-400 p-1 shrink-0"
+                          title="移入本地防丢回收站"
+                        >
+                          <Trash2 size={12} />
+                        </button>
                       </div>
-                      <div className="text-[10px] text-gray-500">{formatBytes(f.size)}</div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => handleSoftDeleteKbFile(f.relPath, f.name)}
-                      className="text-gray-500 hover:text-rose-400 p-1 shrink-0"
-                      title="移入本地防丢回收站"
-                    >
-                      <Trash2 size={12} />
-                    </button>
+                    ))}
                   </div>
-                ))}
+                )}
               </div>
-            )}
-          </div>
 
-          <div>
-            <div className="text-[11px] font-medium text-gray-400 mb-2">
-              输出文件夹（{outputFiles.length}）
-            </div>
-            {outputFiles.length === 0 ? (
-              <div className="text-[11px] text-gray-500 py-2">暂无生成的报告文件</div>
-            ) : (
-              <div className="space-y-1.5">
-                {outputFiles.map((f) => (
-                  <div
-                    key={f.relPath}
-                    className="flex items-center justify-between gap-2 bg-[#232731] rounded-lg px-2.5 py-1.5 border border-gray-800"
-                  >
-                    <div className="min-w-0">
-                      <div className="truncate text-emerald-300 text-[11px]" title={f.relPath}>
-                        {f.name}
+              <div>
+                <div className="text-[11px] font-medium text-gray-400 mb-2">
+                  输出文件夹（{outputFiles.length}）
+                </div>
+                {outputFiles.length === 0 ? (
+                  <div className="text-[11px] text-gray-500 py-2">暂无生成的报告文件</div>
+                ) : (
+                  <div className="space-y-1.5">
+                    {outputFiles.map((f) => (
+                      <div
+                        key={f.relPath}
+                        className="flex items-center justify-between gap-2 bg-[#232731] rounded-lg px-2.5 py-1.5 border border-gray-800"
+                      >
+                        <div className="min-w-0">
+                          <div className="truncate text-emerald-300 text-[11px]" title={f.relPath}>
+                            {f.name}
+                          </div>
+                          <div className="text-[10px] text-gray-500">{formatBytes(f.size)}</div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadFile(f.relPath, f.name)}
+                          className="text-emerald-400 hover:text-emerald-300 p-1 shrink-0"
+                          title="下载文件"
+                        >
+                          <Download size={13} />
+                        </button>
                       </div>
-                      <div className="text-[10px] text-gray-500">{formatBytes(f.size)}</div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => handleDownloadFile(f.relPath, f.name)}
-                      className="text-emerald-400 hover:text-emerald-300 p-1 shrink-0"
-                      title="下载文件"
-                    >
-                      <Download size={13} />
-                    </button>
+                    ))}
                   </div>
-                ))}
+                )}
               </div>
-            )}
-          </div>
+            </>
+          ) : (
+            <div>
+              <div className="text-[11px] font-medium text-gray-400 mb-2 flex items-center justify-between">
+                <span>记忆文件（{memories.length}）</span>
+                <button
+                  type="button"
+                  onClick={loadMemories}
+                  disabled={isLoadingMemories}
+                  className="inline-flex items-center gap-1 text-[10px] text-gray-400 hover:text-indigo-300 disabled:opacity-40"
+                  title="刷新记忆列表"
+                >
+                  <RefreshCw size={11} className={isLoadingMemories ? 'animate-spin' : ''} />
+                  <span>刷新</span>
+                </button>
+              </div>
+              {isLoadingMemories ? (
+                <div className="text-[11px] text-gray-500 py-2">正在加载记忆...</div>
+              ) : memories.length === 0 ? (
+                <div className="text-[11px] text-gray-500 py-2">暂无记忆，可点击右上角新建或记入 AI 回复</div>
+              ) : (
+                <div className="space-y-1.5">
+                  {memories.map((mem) => (
+                    <div
+                      key={mem.filename || mem.title}
+                      onClick={() => setActivePreviewMem(mem)}
+                      className="bg-[#232731] rounded-lg px-2.5 py-1.5 border border-gray-800 cursor-pointer hover:border-indigo-500/40 transition-colors"
+                      title="点击查看记忆全文"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="truncate text-gray-200 text-[11px]" title={mem.filename || mem.title}>
+                            {mem.title}
+                          </div>
+                          <div className="truncate text-[10px] text-gray-500">
+                            {mem.preview || '暂无预览内容'}
+                          </div>
+                          <div className="text-[10px] text-gray-600">
+                            {formatBytes(mem.size)}
+                            {mem.updatedAt ? ` · ${mem.updatedAt}` : ''}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteMemory(mem);
+                          }}
+                          className="text-gray-500 hover:text-rose-400 p-1 shrink-0"
+                          title="归档删除记忆"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </aside>
 
@@ -1189,6 +1429,125 @@ export default function AICopilot() {
                 className="px-4 py-1.5 rounded-lg text-xs bg-rose-600 hover:bg-rose-500 text-white font-medium"
               >
                 {isDeletingProj ? '移入回收站中...' : '确认移入回收站'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 新建/编辑记忆弹窗 */}
+      {memModalOpen && (
+        <div className="fixed inset-0 bg-black/65 flex items-center justify-center z-50 p-4">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleConfirmSaveMemory();
+            }}
+            className="bg-[#252830] border border-gray-700 rounded-2xl w-full max-w-lg p-5 shadow-2xl space-y-4"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <Sparkles size={15} className="text-indigo-400" />
+                <span>记入我的记忆</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => {
+                  setMemModalOpen(false);
+                  setMemDraftTitle('');
+                  setMemDraftContent('');
+                }}
+                className="text-gray-400 hover:text-white"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">记忆标题</label>
+              <input
+                type="text"
+                value={memDraftTitle}
+                onChange={(e) => setMemDraftTitle(e.target.value)}
+                placeholder={`${selectedProject} - 记忆`}
+                className="w-full bg-[#1a1d24] border border-gray-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">记忆内容</label>
+              <textarea
+                rows={10}
+                value={memDraftContent}
+                onChange={(e) => setMemDraftContent(e.target.value)}
+                placeholder="输入需要长期保留的要点、结论或 AI 回复内容..."
+                className="w-full bg-[#1a1d24] border border-gray-700 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-500 resize-none focus:outline-none focus:border-indigo-500"
+              />
+              <p className="mt-1 text-[10px] text-gray-500">
+                保存前会自动剥离未闭合的 &lt;think&gt; 思考草稿。
+              </p>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setMemModalOpen(false);
+                  setMemDraftTitle('');
+                  setMemDraftContent('');
+                }}
+                className="px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:bg-gray-800"
+              >
+                取消
+              </button>
+              <button
+                type="submit"
+                disabled={isSavingMemory}
+                className="px-4 py-1.5 rounded-lg text-xs bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-medium"
+              >
+                {isSavingMemory ? '保存中...' : '确认记入'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* 记忆全文预览弹窗 */}
+      {activePreviewMem && (
+        <div className="fixed inset-0 bg-black/65 flex items-center justify-center z-50 p-4">
+          <div className="bg-[#252830] border border-gray-700 rounded-2xl w-full max-w-2xl p-5 shadow-2xl space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h3 className="text-sm font-bold text-white truncate" title={activePreviewMem.title}>
+                  {activePreviewMem.title}
+                </h3>
+                <p className="mt-1 text-[10px] text-gray-500 truncate" title={activePreviewMem.filename}>
+                  {activePreviewMem.filename} · {formatBytes(activePreviewMem.size)}
+                  {activePreviewMem.updatedAt ? ` · ${activePreviewMem.updatedAt}` : ''}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActivePreviewMem(null)}
+                className="text-gray-400 hover:text-white shrink-0"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="max-h-[55vh] overflow-y-auto bg-[#1a1d24] border border-gray-800 rounded-xl px-3.5 py-3 text-xs text-gray-300 leading-relaxed whitespace-pre-wrap">
+              {activePreviewMem.content || '暂无记忆内容'}
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => handleDeleteMemory(activePreviewMem)}
+                className="px-3 py-1.5 rounded-lg text-xs text-rose-300 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30"
+              >
+                归档删除
+              </button>
+              <button
+                type="button"
+                onClick={() => setActivePreviewMem(null)}
+                className="px-4 py-1.5 rounded-lg text-xs bg-gray-700 hover:bg-gray-600 text-white font-medium"
+              >
+                关闭
               </button>
             </div>
           </div>
