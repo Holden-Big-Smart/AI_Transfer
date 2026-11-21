@@ -1,711 +1,1194 @@
-// src/pages/AICopilot/index.tsx
-import { useState, useRef, useEffect } from 'react';
-import { 
-  Bot, Send, RefreshCw, Sparkles, Folder, FileText, 
-  FolderOutput, CheckCircle2, Clock, Terminal, ChevronRight,
-  Paperclip, X, Trash2, CheckSquare, Square, AlertCircle,
-  History, MessageSquare, Plus
+﻿// src/pages/AICopilot/index.tsx
+import { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  Bot,
+  Send,
+  Plus,
+  Trash2,
+  RefreshCw,
+  FileText,
+  Download,
+  BookmarkPlus,
+  Paperclip,
+  Wifi,
+  WifiOff,
+  FolderOpen,
+  MessageSquare,
+  CheckCircle2,
+  AlertTriangle,
+  Sparkles,
+  ChevronDown,
+  ChevronRight,
+  FolderPlus,
+  X
 } from 'lucide-react';
-import { useChatStore, type Message, type AttachedFile } from '../../store/useChatStore';
 import { useAuthStore } from '../../store/useAuthStore';
+import { API_BASE_URL } from '../../utils/api';
 
-// 字节单位格式化
-const formatBytes = (bytes: number) => {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-};
+interface AiSession {
+  id: string;
+  user_id: string;
+  project_name: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+}
 
-export default function AICopilot() {
-  const { currentUser } = useAuthStore();
-  // 引入会话管理相关字段与方法
-  const { 
-    messages, isThinking, selectedProject, syncStatus, lastSyncTime, contextTurnCount,
-    sessions, currentSessionId, createNewSession, switchSession, deleteSession,
-    setThinking, setSelectedProject, setSyncStatus, addMessage, deleteMessage, batchDeleteMessages, clearAllMessages
-  } = useChatStore();
-
-  // 记住历史抽屉开关状态，刷新页面不再重置
-  const [isHistoryOpen, setIsHistoryOpen] = useState(() => {
-    return localStorage.getItem('ai_history_drawer_open') === 'true';
-  });
-
-  const toggleHistoryDrawer = () => {
-    setIsHistoryOpen((prev) => {
-      const next = !prev;
-      localStorage.setItem('ai_history_drawer_open', String(next));
-      return next;
-    });
+interface AiMessage {
+  id: string;
+  session_id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  meta?: {
+    attachments?: string[];
+    generatedDocx?: string;
+    outputFolder?: string;
+    error?: string;
+    deepThinking?: boolean;
   };
+  created_at?: string;
+}
 
-  const [inputText, setInputText] = useState('');
-  const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
-  const [isManageMode, setIsManageMode] = useState(false);
-  const [selectedMsgIds, setSelectedMsgIds] = useState<string[]>([]);
+interface KbFileEntry {
+  name: string;
+  relPath: string;
+  size: number;
+  updatedAt?: string;
+}
 
-  // 通用确认弹窗状态 (用于对话单条删除、批量删除及历史会话删除)
-  const [confirmModal, setConfirmModal] = useState<{
-    isOpen: boolean;
-    title: string;
-    description: string;
-    confirmText?: string;
-    onConfirm: () => void;
-  }>({
-    isOpen: false,
-    title: '',
-    description: '',
-    onConfirm: () => {},
-  });
+interface AttachedFilePayload {
+  name: string;
+  content_base64: string;
+  size: number;
+}
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+function getTokenHeaders(): Record<string, string> {
+  const token = localStorage.getItem('access_token');
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
-  // 消息自动滚到底部
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isThinking]);
+function formatBytes(bytes: number): string {
+  if (!bytes || bytes <= 0) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
-  // 模拟即时同步
-  const handleManualSync = () => {
-    setSyncStatus('syncing');
-    setTimeout(() => {
-      setSyncStatus('synced', new Date().toLocaleTimeString('zh-CN', { hour12: false }));
-    }, 1000);
-  };
-
-  // 处理附件上传选择
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      const newFiles: AttachedFile[] = Array.from(e.target.files).map((f) => ({
-        id: `att_${Date.now()}_${Math.random()}`,
-        name: f.name,
-        size: f.size
-      }));
-      setAttachedFiles((prev) => [...prev, ...newFiles]);
-    }
-    if (fileInputRef.current) fileInputRef.current.value = '';
-  };
-
-  const removeAttachment = (id: string) => {
-    setAttachedFiles((prev) => prev.filter((f) => f.id !== id));
-  };
-
-  // 1. 先定义发送消息
-  const handleSendMessage = () => {
-    if ((!inputText.trim() && attachedFiles.length === 0) || isThinking) return;
-
-    const userPrompt = inputText.trim();
-    const currentAttachments = [...attachedFiles];
-
-    const userMsg: Message = {
-      id: `msg_user_${Date.now()}`,
-      sender: 'user',
-      text: userPrompt || (currentAttachments.length > 0 ? '【发送了附件资料】' : ''),
-      time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }),
-      attachedFiles: currentAttachments.length > 0 ? currentAttachments : undefined
+function splitThinkingContent(raw: string): { thinking: string; answer: string; isThinkingOpenDefault: boolean } {
+  const text = raw || '';
+  const closedMatch = text.match(/<think>([\s\S]*?)<\/think>/i);
+  if (closedMatch) {
+    const thinking = (closedMatch[1] || '').trim();
+    const answer = text.replace(/<think>[\s\S]*?<\/think>/i, '').trim();
+    return { thinking, answer, isThinkingOpenDefault: false };
+  }
+  const openMatch = text.match(/<think>([\s\S]*)$/i);
+  if (openMatch) {
+    return {
+      thinking: (openMatch[1] || '').trim(),
+      answer: '',
+      isThinkingOpenDefault: true
     };
+  }
+  return { thinking: '', answer: text, isThinkingOpenDefault: false };
+}
 
-    addMessage(userMsg);
-    setInputText('');
-    setAttachedFiles([]);
-    setThinking(true);
+function AssistantBubble({
+  content,
+  isStreaming,
+  meta,
+  onDownload
+}: {
+  content: string;
+  isStreaming: boolean;
+  meta?: AiMessage['meta'];
+  onDownload: (relPath: string, fileName: string) => void;
+}) {
+  const { thinking, answer, isThinkingOpenDefault } = splitThinkingContent(content);
+  const [expanded, setExpanded] = useState<boolean>(isThinkingOpenDefault);
 
-    // 重置文本框高度
-    if (textareaRef.current) textareaRef.current.style.height = 'auto';
-
-    // 模拟本地大模型推理与工具调用写入
-    setTimeout(() => {
-      const isGenerateRequest = userPrompt.includes('大纲') || userPrompt.includes('总结') || userPrompt.includes('输出');
-      
-      const aiResponse: Message = {
-        id: `msg_ai_${Date.now()}`,
-        sender: 'ai',
-        text: isGenerateRequest
-          ? `已成功检索【${selectedProject}】目录及您上传的临时文件。已为您提取核心要点，并在【${selectedProject}】的专属输出文件夹中生成了 Word 文档。`
-          : `已在【${selectedProject}】知识库中完成检索：项目关注要点清晰，模型随时可调用写入工具导出总结报告。`,
-        time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }),
-        generatedFile: isGenerateRequest ? {
-          name: `${selectedProject}_分析大纲_V1.docx`,
-          path: `${selectedProject} / 输出文件夹 /`,
-          size: '26.8 KB'
-        } : undefined
-      };
-
-      addMessage(aiResponse);
-      setThinking(false);
-    }, 1000);
-  };
-
-  // 2. 后定义快捷键监听：Enter 发送，Shift + Enter 换行
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSendMessage();
+  useEffect(() => {
+    if (isThinkingOpenDefault) {
+      setExpanded(true);
     }
-  };
-
-  // 批量管理勾选切换
-  const toggleSelectMessage = (id: string) => {
-    setSelectedMsgIds((prev) => 
-      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
-    );
-  };
-
-  const handleSelectAll = () => {
-    if (selectedMsgIds.length === messages.filter(m => m.sender !== 'system').length) {
-      setSelectedMsgIds([]);
-    } else {
-      setSelectedMsgIds(messages.filter(m => m.sender !== 'system').map(m => m.id));
-    }
-  };
-
-  // 执行批量删除
-  const handleExecuteBatchDelete = () => {
-    if (selectedMsgIds.length === 0) return;
-    batchDeleteMessages(selectedMsgIds);
-    setSelectedMsgIds([]);
-    setIsManageMode(false);
-  };
+  }, [isThinkingOpenDefault]);
 
   return (
-    <div className="h-full w-full bg-[#1e2128] text-gray-200 flex overflow-hidden select-none">
-      
-      {/* 隐藏的文件输入组件 */}
-      <input 
-        type="file" 
-        ref={fileInputRef} 
-        multiple 
-        className="hidden" 
-        onChange={handleFileChange} 
-      />
-
-      {/* 左侧历史会话抽屉（可折叠） */}
-      {isHistoryOpen && (
-        <div className="w-64 bg-[#1a1c23] border-r border-gray-800 flex flex-col h-full shrink-0 z-10 animate-in slide-in-from-left duration-200">
-          <div className="p-3 border-b border-gray-800 flex items-center justify-between">
-            <span className="text-xs font-semibold text-gray-300 flex items-center gap-1.5">
-              <MessageSquare size={14} className="text-blue-400" />
-              历史对话记录
+    <div className="max-w-[82%] rounded-2xl px-4 py-3 text-xs leading-relaxed whitespace-pre-wrap shadow-sm bg-[#252932] border border-gray-700/80 text-gray-200 space-y-2.5">
+      {thinking && (
+        <div className="rounded-xl bg-[#1b1e26] border border-indigo-500/30 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setExpanded((prev) => !prev)}
+            className="w-full px-3 py-2 flex items-center justify-between text-[11px] text-indigo-300 hover:bg-indigo-500/10 transition-colors"
+          >
+            <span className="inline-flex items-center gap-1.5 font-medium">
+              <Sparkles size={12} className="text-indigo-400" />
+              <span>{isStreaming && !answer ? '深度思考中...' : '深度思考过程'}</span>
             </span>
-            <button onClick={toggleHistoryDrawer} className="text-gray-500 hover:text-white">
-              <X size={15} />
-            </button>
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
-            {sessions.map((s) => {
-              const isActive = s.id === currentSessionId;
-              return (
-                <div
-                  key={s.id}
-                  onClick={() => switchSession(s.id)}
-                  className={`group flex items-center justify-between p-2.5 rounded-xl cursor-pointer text-xs transition-colors border ${
-                    isActive
-                      ? 'bg-blue-600/15 border-blue-500/40 text-white'
-                      : 'bg-[#21242c] border-transparent text-gray-400 hover:bg-[#282c37] hover:text-gray-200'
-                  }`}
-                >
-                  <div className="truncate pr-2 flex-1">
-                    <div className="font-medium truncate text-gray-200">{s.title}</div>
-                    <div className="text-[10px] text-gray-500 flex items-center gap-1 mt-0.5">
-                      <span>{s.updatedAt}</span>
-                      <span>·</span>
-                      <span className="text-blue-400/80">【{s.project}】</span>
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setConfirmModal({
-                        isOpen: true,
-                        title: '确认删除历史会话？',
-                        description: `确定要永久移除会话【${s.title}】吗？该会话的所有对话与临时状态将被清空。`,
-                        confirmText: '确认删除',
-                        onConfirm: () => {
-                          deleteSession(s.id);
-                          setConfirmModal((prev) => ({ ...prev, isOpen: false }));
-                        }
-                      });
-                    }}
-                    className="opacity-0 group-hover:opacity-100 p-1 text-gray-500 hover:text-red-400 transition-opacity"
-                    title="删除此会话"
-                  >
-                    <Trash2 size={13} />
-                  </button>
-                </div>
-              );
-            })}
-          </div>
+            {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+          </button>
+          {expanded && (
+            <div className="px-3 py-2 text-[11px] text-gray-400 border-t border-gray-800/80 whitespace-pre-wrap leading-relaxed">
+              {thinking}
+            </div>
+          )}
         </div>
       )}
 
-      {/* 左侧主体：AI 对话流控制台 */}
-      <div className="flex-1 flex flex-col h-full border-r border-gray-800 overflow-hidden">
+      <div>
+        {answer ||
+          (isStreaming && !thinking
+            ? '正在本地推理生成中...'
+            : !thinking
+            ? content
+            : '')}
+      </div>
 
-        {/* 对话窗口头部导航 */}
-        <header className="h-14 bg-[#2a2d35]/60 border-b border-gray-700/60 flex items-center justify-between px-6 shrink-0">
-          <div className="flex items-center gap-3">
-            {/* 历史会话抽屉切换按钮 */}
+      {meta?.generatedDocx && (
+        <div className="pt-2 border-t border-gray-700 flex items-center justify-between gap-3 text-[11px] text-emerald-300">
+          <span>已生成 Word：{meta.generatedDocx}</span>
+          {meta.outputFolder && (
             <button
-              onClick={toggleHistoryDrawer}
-              className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border transition-colors ${
-                isHistoryOpen
-                  ? 'bg-blue-600 border-blue-500 text-white'
-                  : 'bg-[#1e2128] border-gray-700 text-gray-300 hover:text-white hover:bg-[#323640]'
+              type="button"
+              onClick={() => onDownload(meta.outputFolder!, meta.generatedDocx!)}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-200"
+            >
+              <Download size={12} />
+              <span>下载</span>
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function AICopilot() {
+  const { currentUser, setAllowedProjects } = useAuthStore();
+
+  const allowedProjects: string[] = (() => {
+    const list = currentUser?.allowedProjects;
+    if (Array.isArray(list) && list.length > 0) return list;
+    return ['通用公用库'];
+  })();
+
+  const [selectedProject, setSelectedProject] = useState<string>(allowedProjects[0]);
+  const [isOnline, setIsOnline] = useState<boolean>(false);
+  const [statusMessage, setStatusMessage] = useState<string>('正在检测本地算力状态...');
+  const [modelInfo, setModelInfo] = useState<string>('qwen2.5:7b + bge-m3');
+
+  const [sessions, setSessions] = useState<AiSession[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string>('');
+  const [messages, setMessages] = useState<AiMessage[]>([]);
+
+  const [kbFiles, setKbFiles] = useState<KbFileEntry[]>([]);
+  const [outputFiles, setOutputFiles] = useState<KbFileEntry[]>([]);
+  const [lastSync, setLastSync] = useState<string>('尚未同步');
+  const [chunkCount, setChunkCount] = useState<number>(0);
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
+
+  // 新建与删除项目弹窗状态
+  const [isCreateProjOpen, setIsCreateProjOpen] = useState<boolean>(false);
+  const [newProjectName, setNewProjectName] = useState<string>('');
+  const [isCreatingProj, setIsCreatingProj] = useState<boolean>(false);
+  const [isDeleteProjOpen, setIsDeleteProjOpen] = useState<boolean>(false);
+  const [isDeletingProj, setIsDeletingProj] = useState<boolean>(false);
+
+  const [inputText, setInputText] = useState<string>('');
+  const [attachments, setAttachments] = useState<AttachedFilePayload[]>([]);
+  const [deepThinking, setDeepThinking] = useState<boolean>(false);
+  const [generateDocx, setGenerateDocx] = useState<boolean>(false);
+  const [docxTitle, setDocxTitle] = useState<string>('');
+  const [isStreaming, setIsStreaming] = useState<boolean>(false);
+  const [toast, setToast] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const showToast = useCallback((type: 'ok' | 'err', text: string) => {
+    setToast({ type, text });
+    window.setTimeout(() => {
+      setToast((prev) => (prev?.text === text ? null : prev));
+    }, 3600);
+  }, []);
+
+  useEffect(() => {
+    if (!allowedProjects.includes(selectedProject)) {
+      setSelectedProject(allowedProjects[0]);
+    }
+  }, [allowedProjects, selectedProject]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, isStreaming]);
+
+  const checkComputeStatus = useCallback(async () => {
+    try {
+      const res = await fetch(
+        `${API_BASE_URL}/api/ai/status?project=${encodeURIComponent(selectedProject)}`,
+        { headers: getTokenHeaders() }
+      );
+      if (!res.ok) {
+        setIsOnline(false);
+        setStatusMessage('本地算力离线');
+        return;
+      }
+      const data = await res.json();
+      const online = Boolean(data.online);
+      setIsOnline(online);
+      setStatusMessage(online ? '本地算力在线' : '本地算力离线');
+      if (data.chat_model || data.embed_model) {
+        setModelInfo(`${data.chat_model || 'qwen2.5:7b'} · ${data.embed_model || 'bge-m3'}`);
+      }
+    } catch {
+      setIsOnline(false);
+      setStatusMessage('本地算力离线');
+    }
+  }, [selectedProject]);
+
+  const loadKbTree = useCallback(async () => {
+    try {
+      const res = await fetch(
+        `${API_BASE_URL}/api/ai/kb/tree?project=${encodeURIComponent(selectedProject)}`,
+        { headers: getTokenHeaders() }
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      setKbFiles(Array.isArray(data.kbFiles) ? data.kbFiles : []);
+      setOutputFiles(Array.isArray(data.outputFiles) ? data.outputFiles : []);
+      setLastSync(data.lastSync || '尚未同步');
+      setChunkCount(Number(data.chunkCount || 0));
+    } catch {
+      // 离线时不中断界面
+    }
+  }, [selectedProject]);
+
+  const loadMessages = useCallback(async (sessionId: string) => {
+    if (!sessionId) {
+      setMessages([]);
+      return;
+    }
+    try {
+      const res = await fetch(
+        `${API_BASE_URL}/api/ai/sessions/${encodeURIComponent(sessionId)}/messages`,
+        { headers: getTokenHeaders() }
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      setMessages(Array.isArray(data.messages) ? data.messages : []);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const handleCreateSession = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/ai/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getTokenHeaders() },
+        body: JSON.stringify({ project_name: selectedProject })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        showToast('err', err.detail || '创建会话失败');
+        return;
+      }
+      const data = await res.json();
+      if (data.session) {
+        setSessions((prev) => [data.session, ...prev]);
+        setActiveSessionId(data.session.id);
+        setMessages([]);
+      }
+    } catch {
+      showToast('err', '创建会话网络异常');
+    }
+  }, [selectedProject, showToast]);
+
+  const loadSessions = useCallback(async () => {
+    try {
+      const res = await fetch(
+        `${API_BASE_URL}/api/ai/sessions?project=${encodeURIComponent(selectedProject)}`,
+        { headers: getTokenHeaders() }
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      const list: AiSession[] = Array.isArray(data.sessions) ? data.sessions : [];
+      setSessions(list);
+      if (list.length > 0) {
+        const currentExists = list.some((s) => s.id === activeSessionId);
+        const targetId = currentExists ? activeSessionId : list[0].id;
+        setActiveSessionId(targetId);
+        await loadMessages(targetId);
+      } else {
+        setActiveSessionId('');
+        setMessages([]);
+      }
+    } catch {
+      // ignore
+    }
+  }, [selectedProject, activeSessionId, loadMessages]);
+
+  useEffect(() => {
+    checkComputeStatus();
+    loadSessions();
+    loadKbTree();
+    const timer = window.setInterval(checkComputeStatus, 15000);
+    return () => window.clearInterval(timer);
+  }, [selectedProject, checkComputeStatus, loadSessions, loadKbTree]);
+
+  const handleCreateProject = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const clean = newProjectName.trim();
+    if (!clean) return;
+    if (!isOnline) {
+      showToast('err', '本地算力离线，无法在本地创建项目目录');
+      return;
+    }
+    setIsCreatingProj(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/ai/projects/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getTokenHeaders() },
+        body: JSON.stringify({ project_name: clean })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showToast('err', data.detail || '创建项目失败');
+        return;
+      }
+      if (Array.isArray(data.allowed_projects)) {
+        setAllowedProjects(data.allowed_projects);
+      } else if (!allowedProjects.includes(clean)) {
+        setAllowedProjects([...allowedProjects, clean]);
+      }
+      setSelectedProject(clean);
+      setNewProjectName('');
+      setIsCreateProjOpen(false);
+      showToast('ok', `已创建项目「${clean}」`);
+    } catch {
+      showToast('err', '创建项目网络异常');
+    } finally {
+      setIsCreatingProj(false);
+    }
+  };
+
+  const handleConfirmDeleteProject = async () => {
+    if (selectedProject === '通用公用库') return;
+    if (!isOnline) {
+      showToast('err', '本地算力离线，无法将项目移入回收站');
+      return;
+    }
+    setIsDeletingProj(true);
+    const targetName = selectedProject;
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/ai/projects/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getTokenHeaders() },
+        body: JSON.stringify({ project_name: targetName })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showToast('err', data.detail || '删除项目失败');
+        return;
+      }
+      const nextAllowed = Array.isArray(data.allowed_projects) && data.allowed_projects.length > 0
+        ? data.allowed_projects
+        : allowedProjects.filter((p) => p !== targetName).length > 0
+        ? allowedProjects.filter((p) => p !== targetName)
+        : ['通用公用库'];
+      setAllowedProjects(nextAllowed);
+      const fallbackProj = nextAllowed[0] || '通用公用库';
+      setSelectedProject(fallbackProj);
+      setIsDeleteProjOpen(false);
+      showToast('ok', `已将项目「${targetName}」移入本地回收站`);
+    } catch {
+      showToast('err', '删除项目网络异常');
+    } finally {
+      setIsDeletingProj(false);
+    }
+  };
+
+  const handleDeleteSession = async (sessionId: string) => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/ai/sessions/${encodeURIComponent(sessionId)}`, {
+        method: 'DELETE',
+        headers: getTokenHeaders()
+      });
+      if (res.ok) {
+        showToast('ok', '会话已删除');
+        await loadSessions();
+      }
+    } catch {
+      showToast('err', '删除会话失败');
+    }
+  };
+
+  const handleDeleteMessagePair = async (messageId: string) => {
+    if (!activeSessionId) return;
+    try {
+      const res = await fetch(
+        `${API_BASE_URL}/api/ai/sessions/${encodeURIComponent(activeSessionId)}/messages/delete-pair`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...getTokenHeaders() },
+          body: JSON.stringify({ message_id: messageId })
+        }
+      );
+      if (res.ok) {
+        await loadMessages(activeSessionId);
+        showToast('ok', '已成对移除该轮问答上下文');
+      }
+    } catch {
+      showToast('err', '移除上下文失败');
+    }
+  };
+
+  const handleSyncKb = async () => {
+    setIsSyncing(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/ai/kb/sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getTokenHeaders() },
+        body: JSON.stringify({ project_name: selectedProject })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showToast('err', data.detail || '本地算力离线，无法同步知识库');
+        setIsOnline(false);
+        setStatusMessage('本地算力离线');
+        return;
+      }
+      setIsOnline(true);
+      setStatusMessage('本地算力在线');
+      setLastSync(data.lastSync || '刚刚');
+      setChunkCount(Number(data.chunkCount || 0));
+      await loadKbTree();
+      showToast('ok', `知识库同步完成（共 ${data.chunkCount || 0} 个向量切片）`);
+    } catch {
+      showToast('err', '本地算力离线');
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const handleSoftDeleteKbFile = async (relPath: string, fileName: string) => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/ai/kb/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getTokenHeaders() },
+        body: JSON.stringify({ project_name: selectedProject, rel_path: relPath })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showToast('err', data.detail || '删除失败');
+        return;
+      }
+      await loadKbTree();
+      showToast('ok', `已将「${fileName}」移至本地防丢回收站`);
+    } catch {
+      showToast('err', '本地算力离线，删除操作失败');
+    }
+  };
+
+  const handleDownloadFile = async (relPath: string, fileName: string) => {
+    try {
+      const url = `${API_BASE_URL}/api/ai/kb/download?project=${encodeURIComponent(
+        selectedProject
+      )}&rel_path=${encodeURIComponent(relPath)}`;
+      const res = await fetch(url, { headers: getTokenHeaders() });
+      if (!res.ok) {
+        showToast('err', '下载失败或本地算力离线');
+        return;
+      }
+      const blob = await res.blob();
+      const objUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = objUrl;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(objUrl);
+    } catch {
+      showToast('err', '下载文件异常');
+    }
+  };
+
+  const handleSaveToNote = async (rawContent: string, titleHint?: string) => {
+    const cleanContent = rawContent.replace(/<think>[\s\S]*?<\/think>/gi, '').trim() || rawContent;
+    const cleanTitle = (titleHint || `${selectedProject} - AI 整理总结`).slice(0, 60);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/ai/save-to-note`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getTokenHeaders() },
+        body: JSON.stringify({ title: cleanTitle, content: cleanContent })
+      });
+      if (!res.ok) {
+        showToast('err', '转存笔记失败');
+        return;
+      }
+      showToast('ok', `已转存至在线笔记：「${cleanTitle}」`);
+    } catch {
+      showToast('err', '转存笔记网络异常');
+    }
+  };
+
+  const handlePickFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    const added: AttachedFilePayload[] = [];
+    for (const f of files.slice(0, 5)) {
+      if (f.size > 12 * 1024 * 1024) {
+        showToast('err', `文件 ${f.name} 超过 12MB 限制`);
+        continue;
+      }
+      const buf = await f.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      let binary = '';
+      const chunk = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunk) {
+        binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunk)));
+      }
+      added.push({
+        name: f.name,
+        content_base64: btoa(binary),
+        size: f.size
+      });
+    }
+    setAttachments((prev) => [...prev, ...added].slice(0, 5));
+    e.target.value = '';
+  };
+
+  const handleSend = async () => {
+    const trimmed = inputText.trim();
+    if ((!trimmed && attachments.length === 0) || isStreaming) return;
+
+    if (!isOnline) {
+      showToast('err', '本地算力离线，请先启动本地算力服务');
+      return;
+    }
+
+    let currentSid = activeSessionId;
+    if (!currentSid) {
+      const createRes = await fetch(`${API_BASE_URL}/api/ai/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getTokenHeaders() },
+        body: JSON.stringify({ project_name: selectedProject })
+      });
+      if (!createRes.ok) {
+        showToast('err', '无法创建会话');
+        return;
+      }
+      const created = await createRes.json();
+      currentSid = created.session?.id || '';
+      setActiveSessionId(currentSid);
+      if (created.session) {
+        setSessions((prev) => [created.session, ...prev]);
+      }
+    }
+
+    const tempUserId = `tmp_u_${Date.now()}`;
+    const tempAsstId = `tmp_a_${Date.now()}`;
+    const attNames = attachments.map((a) => a.name);
+    const displayUserText = trimmed || `[上传附件: ${attNames.join(', ')}]`;
+    const activeThinking = deepThinking;
+
+    setInputText('');
+    const sendingAttachments = [...attachments];
+    setAttachments([]);
+    setIsStreaming(true);
+
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: tempUserId,
+        session_id: currentSid,
+        role: 'user',
+        content: displayUserText,
+        meta: attNames.length > 0 ? { attachments: attNames } : undefined
+      },
+      {
+        id: tempAsstId,
+        session_id: currentSid,
+        role: 'assistant',
+        content: '',
+        meta: { deepThinking: activeThinking }
+      }
+    ]);
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/ai/chat/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getTokenHeaders() },
+        body: JSON.stringify({
+          session_id: currentSid,
+          project_name: selectedProject,
+          content: trimmed,
+          attachments: sendingAttachments.map((a) => ({
+            name: a.name,
+            content_base64: a.content_base64
+          })),
+          generate_docx: generateDocx,
+          docx_title: docxTitle.trim() || undefined,
+          deep_thinking: activeThinking
+        })
+      });
+
+      if (!res.ok || !res.body) {
+        throw new Error('本地算力离线');
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop() || '';
+
+        for (const part of parts) {
+          const line = part
+            .split('\n')
+            .find((l) => l.startsWith('data: '));
+          if (!line) continue;
+          try {
+            const evt = JSON.parse(line.slice(6));
+            if (evt.type === 'delta') {
+              const delta = String(evt.content || '');
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === tempAsstId ? { ...m, content: m.content + delta } : m
+                )
+              );
+            } else if (evt.type === 'error') {
+              if (evt.offline) {
+                setIsOnline(false);
+                setStatusMessage('本地算力离线');
+              }
+              showToast('err', evt.message || '本地算力离线');
+            } else if (evt.type === 'done' && evt.generatedDocx) {
+              showToast('ok', `已生成 Word 文档：${evt.generatedDocx}`);
+              await loadKbTree();
+            }
+          } catch {
+            // ignore malformed chunk
+          }
+        }
+      }
+
+      await loadSessions();
+      await loadMessages(currentSid);
+    } catch {
+      setIsOnline(false);
+      setStatusMessage('本地算力离线');
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === tempAsstId ? { ...m, content: '[本地算力离线]' } : m
+        )
+      );
+      showToast('err', '本地算力离线');
+    } finally {
+      setIsStreaming(false);
+      setGenerateDocx(false);
+      setDocxTitle('');
+    }
+  };
+
+  return (
+    <div className="flex h-full w-full bg-[#1e2128] text-gray-200 overflow-hidden relative">
+      {toast && (
+        <div
+          className={`fixed top-4 right-5 z-50 flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-medium shadow-xl border ${
+            toast.type === 'ok'
+              ? 'bg-emerald-950/90 border-emerald-500/40 text-emerald-200'
+              : 'bg-rose-950/90 border-rose-500/40 text-rose-200'
+          }`}
+        >
+          {toast.type === 'ok' ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
+          <span>{toast.text}</span>
+        </div>
+      )}
+
+      {/* 左侧栏：项目沙盒切换 + 新建/删除项目 + 会话列表 */}
+      <aside className="w-64 bg-[#191c22] border-r border-gray-800 flex flex-col shrink-0">
+        <div className="p-3.5 border-b border-gray-800 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 font-bold text-sm text-white">
+              <Bot size={18} className="text-blue-400" />
+              <span>DCM-助手</span>
+            </div>
+            <span
+              className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border ${
+                isOnline
+                  ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                  : 'bg-rose-500/15 text-rose-300 border-rose-500/30'
               }`}
-              title="查看历史对话记录"
             >
-              <History size={14} />
-              <span>历史 ({sessions.length})</span>
-            </button>
-
-            {/* 开启新会话按钮 */}
-            <button
-              onClick={() => createNewSession()}
-              className="flex items-center gap-1 text-xs bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/40 px-2.5 py-1.5 rounded-lg transition-colors"
-              title="保留当前对话并开启一个全新的会话"
-            >
-              <Plus size={14} />
-              <span>新会话</span>
-            </button>
-
-            <div className="h-4 w-px bg-gray-700 mx-1" />
-
-            <div className="w-8 h-8 rounded-lg bg-blue-600/20 text-blue-400 flex items-center justify-center">
-              <Bot size={18} />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-semibold text-sm">本地 AI 智能体 (Agent)</span>
-                <span className="text-[10px] bg-green-900/40 text-green-400 border border-green-700/40 px-1.5 py-0.5 rounded">Ollama 活跃</span>
-              </div>
-              <p className="text-[11px] text-gray-400">
-                上下文记忆：<span className="text-blue-400 font-medium">{contextTurnCount}</span> 条有效记忆 · 支持文档自生成
-              </p>
-            </div>
+              {isOnline ? <Wifi size={11} /> : <WifiOff size={11} />}
+              <span>{isOnline ? '在线' : '离线'}</span>
+            </span>
           </div>
 
-          {/* 右侧操作栏：管理模式切换 / 批量删除 */}
-          <div className="flex items-center gap-3">
-            {isManageMode ? (
-              <div className="flex items-center gap-2 bg-[#1e2128] border border-gray-700 rounded-lg px-2.5 py-1">
-                <button 
-                  onClick={handleSelectAll} 
-                  className="flex items-center gap-1 text-xs text-gray-300 hover:text-white"
-                >
-                  {selectedMsgIds.length > 0 && selectedMsgIds.length === messages.filter(m => m.sender !== 'system').length ? (
-                    <CheckSquare size={14} className="text-blue-400" />
-                  ) : (
-                    <Square size={14} />
-                  )}
-                  <span>全选</span>
-                </button>
-                <span className="text-gray-600 text-xs">|</span>
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-[11px] text-gray-400">当前项目知识库沙盒</label>
+              <div className="flex items-center gap-1">
                 <button
-                  onClick={() => {
-                    setConfirmModal({
-                      isOpen: true,
-                      title: '确认批量删除对话？',
-                      description: `已选择 ${selectedMsgIds.length} 项。删除操作将自动联动补齐成对的问答，并重构 AI 历史记忆库。`,
-                      confirmText: '确认批量删除',
-                      onConfirm: () => {
-                        handleExecuteBatchDelete();
-                        setConfirmModal((prev) => ({ ...prev, isOpen: false }));
-                      }
-                    });
-                  }}
-                  disabled={selectedMsgIds.length === 0}
-                  className="flex items-center gap-1 text-xs text-red-400 hover:text-red-300 disabled:text-gray-600"
+                  type="button"
+                  onClick={() => setIsCreateProjOpen(true)}
+                  className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30"
+                  title="新建知识库项目"
                 >
-                  <Trash2 size={13} />
-                  <span>删除 ({selectedMsgIds.length})</span>
+                  <FolderPlus size={11} />
+                  <span>新建</span>
                 </button>
-                <span className="text-gray-600 text-xs">|</span>
-                <button 
-                  onClick={() => { setIsManageMode(false); setSelectedMsgIds([]); }}
-                  className="text-xs text-gray-400 hover:text-white"
-                >
-                  完成
-                </button>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2">
-                <button 
-                  onClick={() => setIsManageMode(true)}
-                  className="text-xs text-gray-400 hover:text-gray-200 bg-[#1e2128] border border-gray-700 px-2.5 py-1 rounded transition-colors"
-                >
-                  管理对话
-                </button>
-                {/* Admin 与 AE (普通用户) 均可开启新会话/清空历史，仅 Guest 禁用 */}
-                {currentUser?.role !== 'guest' && (
-                  <button 
-                    onClick={clearAllMessages}
-                    className="text-xs text-red-400 hover:text-red-300 bg-[#1e2128] border border-gray-700/60 px-2 py-1 rounded transition-colors"
-                    title="清空当前会话上下文并重置 AI 记忆"
+                {selectedProject !== '通用公用库' && (
+                  <button
+                    type="button"
+                    onClick={() => setIsDeleteProjOpen(true)}
+                    className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded bg-rose-600/15 hover:bg-rose-600/25 text-rose-300 border border-rose-500/30"
+                    title="删除当前项目（移入本地回收站）"
                   >
-                    清空历史
+                    <Trash2 size={11} />
+                    <span>删项目</span>
                   </button>
                 )}
               </div>
-            )}
+            </div>
+            <select
+              value={selectedProject}
+              onChange={(e) => setSelectedProject(e.target.value)}
+              className="w-full bg-[#242832] border border-gray-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
+            >
+              {allowedProjects.map((proj) => (
+                <option key={proj} value={proj}>
+                  {proj}
+                </option>
+              ))}
+            </select>
+          </div>
 
-            <div className="flex items-center gap-1.5 text-xs text-gray-400 pl-2 border-l border-gray-700">
-              <Terminal size={14} className="text-gray-500" />
-              <span>沙盒:</span>
-              <span className="text-blue-400 font-semibold bg-blue-950/40 px-2 py-0.5 rounded border border-blue-800/40">
-                {selectedProject}
+          <button
+            type="button"
+            onClick={handleCreateSession}
+            className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition-colors"
+          >
+            <Plus size={14} />
+            <span>新建对话会话</span>
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-2 space-y-1">
+          {sessions.length === 0 ? (
+            <div className="text-center text-xs text-gray-500 py-8">暂无历史会话</div>
+          ) : (
+            sessions.map((s) => {
+              const active = s.id === activeSessionId;
+              return (
+                <div
+                  key={s.id}
+                  onClick={() => {
+                    setActiveSessionId(s.id);
+                    loadMessages(s.id);
+                  }}
+                  className={`group flex items-center justify-between px-2.5 py-2 rounded-lg cursor-pointer text-xs transition-colors ${
+                    active
+                      ? 'bg-blue-600/20 text-blue-300 border border-blue-500/30'
+                      : 'text-gray-300 hover:bg-gray-800/60'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <MessageSquare size={13} className="shrink-0 opacity-75" />
+                    <span className="truncate">{s.title}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDeleteSession(s.id);
+                    }}
+                    className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-rose-400 p-1"
+                    title="删除会话"
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </aside>
+
+      {/* 中央主区 */}
+      <section className="flex-1 flex flex-col min-w-0 h-full">
+        {!isOnline && (
+          <div className="bg-rose-950/70 border-b border-rose-500/40 px-4 py-2.5 flex items-center justify-between text-xs text-rose-200">
+            <div className="flex items-center gap-2">
+              <WifiOff size={15} className="text-rose-400 shrink-0" />
+              <span>
+                <strong>本地算力离线</strong>：未检测到本地工作站 Agent 与 Ollama 隧道连接，问答与知识库同步暂不可用。
               </span>
             </div>
+            <button
+              type="button"
+              onClick={checkComputeStatus}
+              className="px-2.5 py-1 rounded bg-rose-500/20 hover:bg-rose-500/30 border border-rose-400/30 text-rose-100 shrink-0"
+            >
+              重新探活
+            </button>
+          </div>
+        )}
+
+        <header className="h-12 px-4 border-b border-gray-800 flex items-center justify-between bg-[#1e2128] shrink-0">
+          <div className="flex items-center gap-2 text-xs text-gray-300">
+            <span className="font-semibold text-white">{selectedProject}</span>
+            <span className="text-gray-500">|</span>
+            <span className="text-gray-400">{statusMessage}</span>
+            <span className="hidden sm:inline text-gray-500">({modelInfo})</span>
+          </div>
+          <div className="text-[11px] text-gray-400">
+            向量切片：{chunkCount} · 上次同步：{lastSync}
           </div>
         </header>
 
-        {/* 聊天消息流 */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-4">
-          {messages.map((msg) => {
-            // 系统通知气泡（例如上下文重置提示）
-            if (msg.sender === 'system') {
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {messages.length === 0 ? (
+            <div className="h-full flex flex-col items-center justify-center text-center text-gray-400 max-w-md mx-auto">
+              <Bot size={36} className="text-blue-400 mb-3 opacity-80" />
+              <p className="text-sm font-medium text-gray-200 mb-1">
+                DCM-助手已挂载项目【{selectedProject}】
+              </p>
+              <p className="text-xs text-gray-500 leading-relaxed">
+                可新建或删除项目（删除项目自动移入本地回收站），开启“深度思考”进行多步拆解分析，结合本地知识库与附件进行问答，支持生成 Word 报告、成对删除记忆裁剪与一键转存笔记。
+              </p>
+            </div>
+          ) : (
+            messages.map((msg) => {
+              const isUser = msg.role === 'user';
               return (
-                <div key={msg.id} className="flex justify-center my-3">
-                  <div className="flex items-center gap-1.5 text-[11px] text-yellow-400/80 bg-yellow-950/30 border border-yellow-700/40 px-3 py-1.5 rounded-full">
-                    <AlertCircle size={13} />
-                    <span>{msg.text}</span>
-                  </div>
-                </div>
-              );
-            }
-
-            const isSelected = selectedMsgIds.includes(msg.id);
-
-            return (
-              <div
-                key={msg.id}
-                className={`flex gap-3 max-w-3xl group relative ${
-                  msg.sender === 'user' ? 'ml-auto flex-row-reverse' : ''
-                }`}
-              >
-                {/* 批量管理多选框 */}
-                {isManageMode && (
-                  <button 
-                    onClick={() => toggleSelectMessage(msg.id)}
-                    className="self-center p-1 text-gray-400 hover:text-white"
-                  >
-                    {isSelected ? (
-                      <CheckSquare size={16} className="text-blue-400" />
-                    ) : (
-                      <Square size={16} />
-                    )}
-                  </button>
-                )}
-
-                {/* 用户 / AI 头像 */}
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 text-xs font-bold ${
-                  msg.sender === 'user' ? 'bg-blue-600 text-white' : 'bg-indigo-600 text-white'
-                }`}>
-                  {msg.sender === 'user' ? 'AE' : <Sparkles size={16} />}
-                </div>
-
-                <div className={`space-y-1.5 max-w-[85%] ${msg.sender === 'user' ? 'items-end' : ''}`}>
-                  
-                  {/* 用户随对话附带的文件展示卡片 */}
-                  {msg.attachedFiles && msg.attachedFiles.length > 0 && (
-                    <div className={`flex flex-wrap gap-1.5 mb-1 ${msg.sender === 'user' ? 'justify-end' : ''}`}>
-                      {msg.attachedFiles.map((file) => (
-                        <div key={file.id} className="flex items-center gap-1 bg-[#16181d] border border-gray-700 px-2 py-1 rounded-md text-[11px] text-gray-300">
-                          <Paperclip size={12} className="text-blue-400" />
-                          <span className="truncate max-w-[150px]">{file.name}</span>
-                          <span className="text-gray-500 text-[10px]">({formatBytes(file.size)})</span>
+                <div
+                  key={msg.id}
+                  className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}
+                >
+                  {isUser ? (
+                    <div className="max-w-[82%] rounded-2xl px-4 py-3 text-xs leading-relaxed whitespace-pre-wrap shadow-sm bg-blue-600/25 border border-blue-500/35 text-blue-50">
+                      {msg.content}
+                      {msg.meta?.attachments && msg.meta.attachments.length > 0 && (
+                        <div className="mt-2 pt-2 border-t border-white/10 text-[11px] text-blue-200">
+                          附件：{msg.meta.attachments.join('、')}
                         </div>
-                      ))}
+                      )}
                     </div>
+                  ) : (
+                    <AssistantBubble
+                      content={msg.content}
+                      isStreaming={isStreaming && msg.id.startsWith('tmp_a_')}
+                      meta={msg.meta}
+                      onDownload={handleDownloadFile}
+                    />
                   )}
 
-                  {/* 消息文本正文 */}
-                  <div className={`p-3.5 rounded-2xl shadow-md text-xs leading-relaxed whitespace-pre-wrap break-words ${
-                    msg.sender === 'user' 
-                      ? 'bg-blue-600 text-white rounded-tr-none' 
-                      : 'bg-[#2a2d35] text-gray-200 border border-gray-700 rounded-tl-none'
-                  }`}>
-                    {msg.text}
-                  </div>
-
-                  {/* AI 生成并写入项目的文件 */}
-                  {msg.generatedFile && (
-                    <div className="bg-[#1e2128] border border-blue-500/40 rounded-xl p-3 flex items-center justify-between gap-4 max-w-md shadow-lg">
-                      <div className="flex items-center gap-2.5 truncate">
-                        <div className="p-2 bg-blue-500/10 text-blue-400 rounded-lg">
-                          <FileText size={18} />
-                        </div>
-                        <div className="truncate">
-                          <div className="font-semibold text-gray-200 truncate text-xs">{msg.generatedFile.name}</div>
-                          <div className="text-[10px] text-gray-500">已写入至: {msg.generatedFile.path}</div>
-                        </div>
-                      </div>
-                      <span className="text-[10px] text-green-400 font-medium shrink-0 bg-green-950/40 border border-green-800/40 px-2 py-1 rounded">
-                        已就绪
-                      </span>
-                    </div>
-                  )}
-
-                  {/* 时间与单条快捷删除按钮 */}
-                  <div className={`flex items-center gap-2 text-[10px] text-gray-500 ${msg.sender === 'user' ? 'justify-end' : ''}`}>
-                    <span>{msg.time}</span>
-                    {!isManageMode && (
+                  {!msg.id.startsWith('tmp_') && (
+                    <div className="flex items-center gap-2 mt-1 px-1 text-[11px] text-gray-500">
+                      {!isUser && msg.content && (
+                        <button
+                          type="button"
+                          onClick={() => handleSaveToNote(msg.content)}
+                          className="inline-flex items-center gap-1 hover:text-blue-400 transition-colors"
+                          title="转存为在线笔记"
+                        >
+                          <BookmarkPlus size={12} />
+                          <span>转存笔记</span>
+                        </button>
+                      )}
                       <button
-                        onClick={() => {
-                          setConfirmModal({
-                            isOpen: true,
-                            title: '确认删除对话？',
-                            description: '系统将执行【成对删除】，同时移除与该条内容对应的问题或回答，并即时重置 AI 上下文记忆。',
-                            confirmText: '成对删除',
-                            onConfirm: () => {
-                              deleteMessage(msg.id);
-                              setConfirmModal((prev) => ({ ...prev, isOpen: false }));
-                            }
-                          });
-                        }}
-                        className="opacity-0 group-hover:opacity-100 transition-opacity text-gray-500 hover:text-red-400 p-0.5"
-                        title="成对删除此对话并同步重置 AI 记忆"
+                        type="button"
+                        onClick={() => handleDeleteMessagePair(msg.id)}
+                        className="inline-flex items-center gap-1 hover:text-rose-400 transition-colors"
+                        title="成对删除该轮问答并裁剪记忆"
                       >
                         <Trash2 size={12} />
+                        <span>成对删除</span>
                       </button>
-                    )}
-                  </div>
+                    </div>
+                  )}
                 </div>
-              </div>
-            );
-          })}
-
-          {/* AI 思考中指示器 */}
-          {isThinking && (
-            <div className="flex gap-3 max-w-xl">
-              <div className="w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center shrink-0">
-                <Sparkles size={16} className="animate-spin" />
-              </div>
-              <div className="bg-[#2a2d35] text-gray-400 text-xs p-3.5 rounded-2xl rounded-tl-none border border-gray-700 flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-blue-500 animate-ping" />
-                正在阅读上下文、匹配项目知识库并调用文件工具...
-              </div>
-            </div>
+              );
+            })
           )}
           <div ref={messagesEndRef} />
         </div>
 
-        {/* 底部仿 Gemini 多功能输入区 */}
-        <div className="p-4 bg-[#2a2d35]/60 border-t border-gray-700/60 shrink-0">
-          
-          {/* 预设快捷指令 */}
-          <div className="flex gap-2 mb-2 overflow-x-auto pb-1">
-            <button
-              onClick={() => setInputText(`请帮我访问【${selectedProject}】文件夹下的资料，总结一份大纲放到输出文件夹中。`)}
-              className="text-[11px] bg-[#1e2128] hover:bg-[#323640] text-gray-300 border border-gray-700 px-2.5 py-1 rounded-full shrink-0 transition-colors"
-            >
-              ⚡ 总结大纲并输出到 Word
-            </button>
-            <button
-              onClick={() => setInputText(`分析【${selectedProject}】项目的核心风险点`)}
-              className="text-[11px] bg-[#1e2128] hover:bg-[#323640] text-gray-300 border border-gray-700 px-2.5 py-1 rounded-full shrink-0 transition-colors"
-            >
-              🔍 检索项目核心难点
-            </button>
+        {/* 底部输入区 */}
+        <div className="p-3.5 border-t border-gray-800 bg-[#191c22] space-y-2.5 shrink-0">
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {attachments.map((att, idx) => (
+                <span
+                  key={`${att.name}_${idx}`}
+                  className="inline-flex items-center gap-1.5 bg-[#262b36] border border-gray-700 rounded-lg px-2.5 py-1 text-[11px] text-gray-200"
+                >
+                  <FileText size={12} className="text-blue-400" />
+                  <span>{att.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => setAttachments((prev) => prev.filter((_, i) => i !== idx))}
+                    className="text-gray-400 hover:text-rose-400"
+                  >
+                    <X size={12} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-gray-400">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <button
+                type="button"
+                onClick={() => setDeepThinking((prev) => !prev)}
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border transition-colors ${
+                  deepThinking
+                    ? 'bg-indigo-600/25 border-indigo-400/50 text-indigo-200 font-medium'
+                    : 'bg-[#242832] border-gray-700/80 text-gray-300 hover:bg-[#2c313d]'
+                }`}
+                title="切换深度思考模式"
+              >
+                <Sparkles size={12} className={deepThinking ? 'text-indigo-300' : 'text-gray-400'} />
+                <span>深度思考：{deepThinking ? '已开启' : '已关闭'}</span>
+              </button>
+
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                onChange={handlePickFiles}
+                className="hidden"
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#242832] hover:bg-[#2c313d] text-gray-200 border border-gray-700/80"
+              >
+                <Paperclip size={12} />
+                <span>上传附件解析</span>
+              </button>
+
+              <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={generateDocx}
+                  onChange={(e) => setGenerateDocx(e.target.checked)}
+                  className="rounded border-gray-600 bg-gray-800 text-blue-500"
+                />
+                <span>自动生成 Word 报告至输出文件夹</span>
+              </label>
+
+              {generateDocx && (
+                <input
+                  type="text"
+                  value={docxTitle}
+                  onChange={(e) => setDocxTitle(e.target.value)}
+                  placeholder="报告标题（可选）"
+                  className="bg-[#242832] border border-gray-700 rounded-lg px-2 py-0.5 text-xs text-white w-40 focus:outline-none focus:border-blue-500"
+                />
+              )}
+            </div>
           </div>
 
-          {/* 输入框主容器 */}
-          <div className="bg-[#1e2128] border border-gray-700 rounded-2xl p-2.5 focus-within:border-blue-500 transition-colors shadow-inner">
-            
-            {/* 待发送附件预览标签组 */}
-            {attachedFiles.length > 0 && (
-              <div className="flex flex-wrap gap-2 mb-2 p-1.5 bg-[#252830] rounded-xl border border-gray-700/60">
-                {attachedFiles.map((file) => (
-                  <div key={file.id} className="flex items-center gap-1.5 bg-[#1e2128] border border-gray-600 px-2 py-1 rounded-lg text-xs text-gray-200">
-                    <Paperclip size={13} className="text-blue-400" />
-                    <span className="truncate max-w-[140px] text-[11px]">{file.name}</span>
-                    <span className="text-[10px] text-gray-400">({formatBytes(file.size)})</span>
-                    <button onClick={() => removeAttachment(file.id)} className="text-gray-400 hover:text-red-400 ml-1">
-                      <X size={13} />
+          <div className="flex items-end gap-2">
+            <textarea
+              rows={2}
+              value={inputText}
+              onChange={(e) => setInputText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSend();
+                }
+              }}
+              placeholder={
+                isOnline
+                  ? `向【${selectedProject}】知识库提问或总结需求（Enter 发送，Shift+Enter 换行）...`
+                  : '本地算力离线，暂无法发送提问'
+              }
+              className="flex-1 bg-[#242832] border border-gray-700 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-gray-500 resize-none focus:outline-none focus:border-blue-500"
+            />
+            <button
+              type="button"
+              disabled={isStreaming || !isOnline}
+              onClick={handleSend}
+              className="h-10 px-4 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-400 text-white text-xs font-medium inline-flex items-center gap-1.5 transition-colors shrink-0"
+            >
+              <Send size={14} />
+              <span>{isStreaming ? '生成中' : '发送'}</span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      {/* 右侧栏 */}
+      <aside className="hidden lg:flex w-72 bg-[#191c22] border-l border-gray-800 flex-col shrink-0">
+        <div className="p-3.5 border-b border-gray-800 flex items-center justify-between">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-white">
+            <FolderOpen size={15} className="text-amber-400" />
+            <span>项目知识库与输出</span>
+          </div>
+          <button
+            type="button"
+            disabled={isSyncing || !isOnline}
+            onClick={handleSyncKb}
+            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-blue-600/20 hover:bg-blue-600/30 disabled:opacity-40 text-blue-300 border border-blue-500/30 text-[11px]"
+          >
+            <RefreshCw size={12} className={isSyncing ? 'animate-spin' : ''} />
+            <span>{isSyncing ? '同步中' : '同步目录'}</span>
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-3 space-y-4 text-xs">
+          <div>
+            <div className="text-[11px] font-medium text-gray-400 mb-2">
+              知识库文件（{kbFiles.length}）
+            </div>
+            {kbFiles.length === 0 ? (
+              <div className="text-[11px] text-gray-500 py-2">暂无知识库文件</div>
+            ) : (
+              <div className="space-y-1.5">
+                {kbFiles.map((f) => (
+                  <div
+                    key={f.relPath}
+                    className="flex items-center justify-between gap-2 bg-[#232731] rounded-lg px-2.5 py-1.5 border border-gray-800"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate text-gray-200 text-[11px]" title={f.relPath}>
+                        {f.name}
+                      </div>
+                      <div className="text-[10px] text-gray-500">{formatBytes(f.size)}</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleSoftDeleteKbFile(f.relPath, f.name)}
+                      className="text-gray-500 hover:text-rose-400 p-1 shrink-0"
+                      title="移入本地防丢回收站"
+                    >
+                      <Trash2 size={12} />
                     </button>
                   </div>
                 ))}
               </div>
             )}
-
-            {/* 多行自适应输入框 */}
-            <textarea
-              ref={textareaRef}
-              rows={2}
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder={`给本地 AI 发送指令（支持 Shift + Enter 换行，Enter 直接发送）...`}
-              className="w-full bg-transparent text-xs text-gray-200 focus:outline-none placeholder-gray-500 resize-none px-1"
-            />
-
-            {/* 输入框底部功能条 */}
-            <div className="flex items-center justify-between pt-1 border-t border-gray-800/80">
-              <div className="flex items-center gap-1">
-                {/* 仿 Gemini 附件添加按钮 */}
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  className="flex items-center gap-1 text-[11px] text-gray-400 hover:text-blue-400 hover:bg-[#2e323c] px-2 py-1 rounded-lg transition-colors"
-                  title="上传参考文档至本次对话上下文"
-                >
-                  <Paperclip size={14} />
-                  <span>添加附件</span>
-                </button>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <span className="text-[10px] text-gray-500 hidden sm:inline">
-                  按 Enter 发送，Shift + Enter 换行
-                </span>
-                <button
-                  onClick={handleSendMessage}
-                  disabled={(!inputText.trim() && attachedFiles.length === 0) || isThinking}
-                  className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 text-white p-1.5 rounded-xl transition-colors shadow"
-                >
-                  <Send size={14} />
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* 右侧边栏：主机端知识库双向映射看板 */}
-      <div className="w-80 bg-[#252830] flex flex-col h-full shrink-0">
-        
-        {/* 同步状态控制栏 */}
-        <div className="p-4 border-b border-gray-700/60">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs font-bold text-gray-300">主机端知识库映射</span>
-            <button
-              onClick={handleManualSync}
-              disabled={syncStatus === 'syncing'}
-              className="flex items-center gap-1.5 text-xs bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800/40 text-white px-2.5 py-1 rounded transition-colors shadow"
-              title="立即与本地主机执行增量防丢同步"
-            >
-              <RefreshCw size={12} className={syncStatus === 'syncing' ? 'animate-spin' : ''} />
-              <span>{syncStatus === 'syncing' ? '同步中...' : '即时同步'}</span>
-            </button>
           </div>
 
-          <div className="bg-[#1e2128] p-2.5 rounded-lg border border-gray-700/50 flex items-center justify-between text-[11px]">
-            <div className="flex items-center gap-1.5 text-gray-400">
-              <Clock size={13} className="text-gray-500" />
-              <span>上次更新: {lastSyncTime}</span>
-            </div>
-            <div className="flex items-center gap-1 text-green-400 font-medium">
-              <CheckCircle2 size={13} />
-              <span>已保持一致</span>
-            </div>
-          </div>
-        </div>
-
-        {/* 项目知识库树状目录 */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
           <div>
-            <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider block mb-2">
-              可用项目目录 (点击切换 AI 路由)
-            </span>
-            
-            {/* 项目列表动态过滤 */}
-            <div className="space-y-1">
-              {['南方电网', 'Cyber_EcoTank', '通用公用库']
-                .filter((proj) => currentUser?.role === 'admin' || currentUser?.allowedProjects.includes(proj))
-                .map((proj) => (
+            <div className="text-[11px] font-medium text-gray-400 mb-2">
+              输出文件夹（{outputFiles.length}）
+            </div>
+            {outputFiles.length === 0 ? (
+              <div className="text-[11px] text-gray-500 py-2">暂无生成的报告文件</div>
+            ) : (
+              <div className="space-y-1.5">
+                {outputFiles.map((f) => (
                   <div
-                    key={proj}
-                    onClick={() => setSelectedProject(proj)}
-                    className={`flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer text-xs transition-colors ${
-                      selectedProject === proj
-                        ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30'
-                        : 'text-gray-300 hover:bg-[#2e323c]'
-                    }`}
+                    key={f.relPath}
+                    className="flex items-center justify-between gap-2 bg-[#232731] rounded-lg px-2.5 py-1.5 border border-gray-800"
                   >
-                    <div className="flex items-center gap-2 truncate">
-                      <Folder size={14} className={selectedProject === proj ? 'text-blue-400' : 'text-yellow-500'} />
-                      <span className="truncate">{proj}</span>
+                    <div className="min-w-0">
+                      <div className="truncate text-emerald-300 text-[11px]" title={f.relPath}>
+                        {f.name}
+                      </div>
+                      <div className="text-[10px] text-gray-500">{formatBytes(f.size)}</div>
                     </div>
-                    <ChevronRight size={14} className="text-gray-500" />
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadFile(f.relPath, f.name)}
+                      className="text-emerald-400 hover:text-emerald-300 p-1 shrink-0"
+                      title="下载文件"
+                    >
+                      <Download size={13} />
+                    </button>
                   </div>
                 ))}
-
-              {currentUser?.role === 'guest' && (
-                <div className="p-3 bg-[#1e2128] rounded text-[11px] text-gray-500 text-center">
-                  访客身份无权限挂载内部项目知识库
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* 当前选定项目的内部结构预览 */}
-          <div className="bg-[#1e2128] rounded-xl p-3 border border-gray-700/60">
-            <span className="text-[11px] font-medium text-gray-400 block mb-2.5">
-              【{selectedProject}】目录结构预览:
-            </span>
-
-            <div className="space-y-2 text-xs">
-              <div className="flex items-center gap-2 text-gray-300 pl-1">
-                <FileText size={13} className="text-blue-400" />
-                <span className="truncate">南方电网原始资料.docx</span>
               </div>
-              <div className="flex items-center gap-2 text-gray-300 pl-1">
-                <FileText size={13} className="text-blue-400" />
-                <span className="truncate">技术参数需求表.xlsx</span>
-              </div>
-
-              {/* 专属输出目录 */}
-              <div className="mt-2 pt-2 border-t border-gray-700/50">
-                <div className="flex items-center gap-1.5 text-green-400 font-semibold mb-1">
-                  <FolderOutput size={14} />
-                  <span>输出文件夹 (AI 写入通道)</span>
-                </div>
-                <p className="text-[10px] text-gray-500 leading-normal pl-5">
-                  AI 生成的 docx/总结均直接写入此路径，并自动同步回当前界面供下载。
-                </p>
-              </div>
-            </div>
+            )}
           </div>
         </div>
+      </aside>
 
-        {/* 底部隔离防丢说明 */}
-        <div className="p-3 bg-[#1e2128] border-t border-gray-700/60 text-[10px] text-gray-500 leading-relaxed">
-          💡 双向防丢策略：在此删除的文件在主机端将移至专属独立回收站，绝不直接物理销毁。
-        </div>
-
-      </div>
-
-      {/* 全局操作确认弹窗 (Fail-Safe 防误触机制) */}
-      {confirmModal.isOpen && (
-        <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-50 animate-in fade-in duration-150">
-          <div className="bg-[#2a2d35] rounded-xl p-5 w-96 shadow-2xl border border-gray-700">
-            <div className="flex justify-between items-center mb-3">
-              <h3 className="text-sm font-bold text-gray-100">{confirmModal.title}</h3>
-              <button 
-                onClick={() => setConfirmModal((prev) => ({ ...prev, isOpen: false }))} 
-                className="text-gray-400 hover:text-white"
-              >
+      {/* 新建项目弹窗 */}
+      {isCreateProjOpen && (
+        <div className="fixed inset-0 bg-black/65 flex items-center justify-center z-50 p-4">
+          <form
+            onSubmit={handleCreateProject}
+            className="bg-[#252830] border border-gray-700 rounded-2xl w-full max-w-sm p-5 shadow-2xl space-y-4"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold text-white">新建项目知识库</h3>
+              <button type="button" onClick={() => setIsCreateProjOpen(false)} className="text-gray-400 hover:text-white">
                 <X size={16} />
               </button>
             </div>
-            <p className="text-xs text-gray-300 mb-5 leading-relaxed bg-[#1e2128] p-3 rounded-lg border border-gray-800">
-              {confirmModal.description}
-            </p>
-            <div className="flex justify-end gap-2.5">
-              <button 
-                onClick={() => setConfirmModal((prev) => ({ ...prev, isOpen: false }))} 
-                className="px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:bg-[#323640] transition-colors"
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">项目名称</label>
+              <input
+                type="text"
+                required
+                value={newProjectName}
+                onChange={(e) => setNewProjectName(e.target.value)}
+                placeholder="例如：RPA模块分析"
+                className="w-full bg-[#1a1d24] border border-gray-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setIsCreateProjOpen(false)}
+                className="px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:bg-gray-800"
               >
                 取消
               </button>
-              <button 
-                onClick={confirmModal.onConfirm} 
-                className="px-3.5 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-medium transition-colors shadow"
+              <button
+                type="submit"
+                disabled={isCreatingProj}
+                className="px-4 py-1.5 rounded-lg text-xs bg-blue-600 hover:bg-blue-500 text-white font-medium"
               >
-                {confirmModal.confirmText || '确认删除'}
+                {isCreatingProj ? '创建中...' : '确认创建'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* 删除项目确认弹窗（移入本地回收站） */}
+      {isDeleteProjOpen && (
+        <div className="fixed inset-0 bg-black/65 flex items-center justify-center z-50 p-4">
+          <div className="bg-[#252830] border border-gray-700 rounded-2xl w-full max-w-sm p-5 shadow-2xl space-y-4">
+            <div className="flex items-center gap-2 text-rose-400 text-sm font-bold">
+              <Trash2 size={16} />
+              <span>确认删除项目「{selectedProject}」？</span>
+            </div>
+            <p className="text-xs text-gray-300 leading-relaxed">
+              该项目目录及其中文件、输出报告将被完整移入本地回收站（<span className="font-mono text-gray-400">_RecycleBin\Projects</span>），并清理对应向量索引。
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setIsDeleteProjOpen(false)}
+                className="px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:bg-gray-800"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingProj}
+                onClick={handleConfirmDeleteProject}
+                className="px-4 py-1.5 rounded-lg text-xs bg-rose-600 hover:bg-rose-500 text-white font-medium"
+              >
+                {isDeletingProj ? '移入回收站中...' : '确认移入回收站'}
               </button>
             </div>
           </div>

@@ -660,3 +660,50 @@ html, body, #root {
 [data-theme="eyecare"] .bg-green-950\/50 {
   background-color: rgba(22, 163, 74, 0.14);
 }
+
+/* ============================================================================
+   5. 补充 AICopilot / UserManagement / 弹窗在亮色与护眼模式下的表面与徽章适配
+   ============================================================================ */
+[data-theme="light"] .bg-\[\#242832\],
+[data-theme="eyecare"] .bg-\[\#242832\],
+[data-theme="light"] .bg-\[\#232731\],
+[data-theme="eyecare"] .bg-\[\#232731\],
+[data-theme="light"] .bg-\[\#1c1f26\],
+[data-theme="eyecare"] .bg-\[\#1c1f26\],
+[data-theme="light"] .bg-\[\#1a1d24\],
+[data-theme="eyecare"] .bg-\[\#1a1d24\] {
+  background-color: var(--bg-input);
+}
+
+[data-theme="light"] .hover\:bg-\[\#2c313d\]:hover,
+[data-theme="eyecare"] .hover\:bg-\[\#2c313d\]:hover,
+[data-theme="light"] .hover\:bg-\[\#232731\]:hover,
+[data-theme="eyecare"] .hover\:bg-\[\#232731\]:hover {
+  background-color: var(--bg-hover);
+}
+
+[data-theme="light"] .bg-blue-950\/40,
+[data-theme="eyecare"] .bg-blue-950\/40 {
+  background-color: rgba(37, 99, 235, 0.12);
+}
+
+[data-theme="light"] .bg-emerald-950\/90,
+[data-theme="eyecare"] .bg-emerald-950\/90 {
+  background-color: #ecfdf5;
+  color: #065f46;
+}
+
+[data-theme="light"] .bg-rose-950\/90,
+[data-theme="light"] .bg-rose-950\/70,
+[data-theme="eyecare"] .bg-rose-950\/90,
+[data-theme="eyecare"] .bg-rose-950\/70 {
+  background-color: #fef2f2;
+  color: #991b1b;
+}
+
+[data-theme="light"] .text-rose-300,
+[data-theme="light"] .text-rose-200,
+[data-theme="eyecare"] .text-rose-300,
+[data-theme="eyecare"] .text-rose-200 {
+  color: #b91c1c;
+}
