@@ -806,3 +806,153 @@ html, body, #root {
 [data-theme="eyecare"] .bg-\[\#1f2229\] {
   background-color: var(--bg-panel);
 }
+
+/* ============================================================================
+   8. 暗色与自定义主题通用 CSS 变量绑定（解决 --bg-base 亮度 <= 180 时退回默认黑灰）
+   ============================================================================ */
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#1e2128\],
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#1e2128\]\/60 {
+  background-color: var(--bg-base);
+}
+
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#2a2d35\],
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#1b1e26\],
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#252932\],
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#222630\] {
+  background-color: var(--bg-surface);
+}
+
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#252830\],
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#21242c\],
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#1f232c\] {
+  background-color: var(--bg-surface-alt);
+}
+
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#16181d\],
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#16181d\]\/95 {
+  background-color: var(--bg-sidebar);
+}
+
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#191b22\],
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#191c23\],
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#191c22\],
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#1d2027\],
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#1c2029\],
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#1c2029\]\/95,
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#1b1f2a\],
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#22252e\],
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#1f2229\] {
+  background-color: var(--bg-panel);
+}
+
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#1a1c23\],
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#1a1d24\],
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#1c1f26\],
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#232731\],
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#242832\],
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#14161b\],
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#14171f\],
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#13151b\],
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#121418\],
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#0e1015\] {
+  background-color: var(--bg-input);
+}
+
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#111318\] {
+  background-color: var(--bg-code);
+}
+
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#151820\] {
+  background-color: var(--bg-code-gutter);
+}
+
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#323640\],
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#262a34\],
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#262b36\],
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#222631\],
+:is([data-theme="dark"], [data-theme="custom"]) .bg-gray-800,
+:is([data-theme="dark"], [data-theme="custom"]) .bg-gray-800\/70 {
+  background-color: var(--bg-hover);
+}
+
+:is([data-theme="dark"], [data-theme="custom"]) .bg-\[\#374151\],
+:is([data-theme="dark"], [data-theme="custom"]) .bg-gray-700 {
+  background-color: var(--bg-hover-strong);
+}
+
+:is([data-theme="dark"], [data-theme="custom"]) .hover\:bg-\[\#323640\]:hover,
+:is([data-theme="dark"], [data-theme="custom"]) .hover\:bg-\[\#252830\]:hover,
+:is([data-theme="dark"], [data-theme="custom"]) .hover\:bg-\[\#2b2f3a\]:hover,
+:is([data-theme="dark"], [data-theme="custom"]) .hover\:bg-\[\#2b303c\]:hover,
+:is([data-theme="dark"], [data-theme="custom"]) .hover\:bg-\[\#2c313d\]:hover,
+:is([data-theme="dark"], [data-theme="custom"]) .hover\:bg-\[\#232731\]:hover,
+:is([data-theme="dark"], [data-theme="custom"]) .hover\:bg-\[\#3d424e\]:hover,
+:is([data-theme="dark"], [data-theme="custom"]) .hover\:bg-\[\#4b5563\]:hover,
+:is([data-theme="dark"], [data-theme="custom"]) .hover\:bg-gray-800:hover,
+:is([data-theme="dark"], [data-theme="custom"]) .hover\:bg-gray-800\/60:hover,
+:is([data-theme="dark"], [data-theme="custom"]) .hover\:bg-gray-700:hover {
+  background-color: var(--bg-hover);
+}
+
+:is([data-theme="dark"], [data-theme="custom"]) .hover\:bg-gray-700\/80:hover {
+  background-color: var(--bg-hover-strong);
+}
+
+:is([data-theme="dark"], [data-theme="custom"]) .text-gray-100,
+:is([data-theme="dark"], [data-theme="custom"]) .text-gray-200,
+:is([data-theme="dark"], [data-theme="custom"]) select.text-white,
+:is([data-theme="dark"], [data-theme="custom"]) input.text-white,
+:is([data-theme="dark"], [data-theme="custom"]) textarea.text-white,
+:is([data-theme="dark"], [data-theme="custom"]) span.text-white,
+:is([data-theme="dark"], [data-theme="custom"]) h1.text-white,
+:is([data-theme="dark"], [data-theme="custom"]) h2.text-white,
+:is([data-theme="dark"], [data-theme="custom"]) h3.text-white,
+:is([data-theme="dark"], [data-theme="custom"]) div.text-white {
+  color: var(--text-primary);
+}
+
+:is([data-theme="dark"], [data-theme="custom"]) .text-gray-300 {
+  color: var(--text-secondary);
+}
+
+:is([data-theme="dark"], [data-theme="custom"]) .text-gray-400 {
+  color: var(--text-muted);
+}
+
+:is([data-theme="dark"], [data-theme="custom"]) .text-gray-500,
+:is([data-theme="dark"], [data-theme="custom"]) .text-gray-600 {
+  color: var(--text-subtle);
+}
+
+:is([data-theme="dark"], [data-theme="custom"]) .hover\:text-white:hover,
+:is([data-theme="dark"], [data-theme="custom"]) .hover\:text-gray-200:hover {
+  color: var(--text-primary);
+}
+
+:is([data-theme="dark"], [data-theme="custom"]) .border-gray-600,
+:is([data-theme="dark"], [data-theme="custom"]) .border-gray-700,
+:is([data-theme="dark"], [data-theme="custom"]) .border-gray-700\/60,
+:is([data-theme="dark"], [data-theme="custom"]) .border-gray-700\/80,
+:is([data-theme="dark"], [data-theme="custom"]) .border-gray-500 {
+  border-color: var(--border-main);
+}
+
+:is([data-theme="dark"], [data-theme="custom"]) .border-gray-800,
+:is([data-theme="dark"], [data-theme="custom"]) .border-gray-800\/80,
+:is([data-theme="dark"], [data-theme="custom"]) .border-gray-800\/90 {
+  border-color: var(--border-subtle);
+}
+
+:is([data-theme="dark"], [data-theme="custom"]) .theme-popover-menu,
+:is([data-theme="dark"], [data-theme="custom"]) [data-theme-popover="true"],
+:is([data-theme="dark"], [data-theme="custom"]) aside .fixed.z-50,
+:is([data-theme="dark"], [data-theme="custom"]) aside .absolute.z-50 {
+  background-color: var(--bg-surface);
+  border-color: var(--border-main);
+  color: var(--text-primary);
+}
+
+:is([data-theme="dark"], [data-theme="custom"]) .theme-popover-menu button:hover,
+:is([data-theme="dark"], [data-theme="custom"]) [data-theme-popover="true"] button:hover {
+  background-color: var(--bg-hover);
+}

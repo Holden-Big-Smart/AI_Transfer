@@ -354,6 +354,22 @@ function isLightColor(value: unknown): boolean {
   return 0.299 * r + 0.587 * g + 0.114 * b > 180;
 }
 
+export function previewThemeFromList(activeThemeId: string, themeList: CustomThemeItem[]) {
+  let savedActiveTheme: string | null = null;
+  try {
+    savedActiveTheme = localStorage.getItem('app_active_theme');
+  } catch {
+    // ignore
+  }
+  applyThemeToDom(activeThemeId, themeList);
+  try {
+    if (savedActiveTheme === null) localStorage.removeItem('app_active_theme');
+    else localStorage.setItem('app_active_theme', savedActiveTheme);
+  } catch {
+    // ignore
+  }
+}
+
 export function applyThemeToDom(
   theme: ThemeMode,
   allThemes: CustomThemeItem[] = runtimeAllThemes

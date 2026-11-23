@@ -1,4 +1,11 @@
-﻿import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+﻿import {
+  useState,
+  useEffect,
+  useCallback,
+  useRef,
+  useMemo,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 import {
   Users,
   FolderKanban,
@@ -28,6 +35,7 @@ import {
   LOGO_ICON_COMPONENTS,
   getThemeLogo,
   isLogoIcon,
+  previewThemeFromList,
   type CustomThemeItem,
   type LogoIcon,
   type ThemeLogo,
@@ -162,6 +170,42 @@ function toColorInputValue(value: unknown): string {
   return '#334155';
 }
 
+function hexToHsv(value: unknown): { h: number; s: number; v: number } {
+  const hex = toColorInputValue(value);
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const d = max - min;
+  let h = 0;
+  if (d !== 0) {
+    if (max === r) h = ((g - b) / d) % 6;
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h = (h * 60 + 360) % 360;
+  }
+  return { h, s: max === 0 ? 0 : d / max, v: max };
+}
+
+function hsvToHex(h: number, s: number, v: number): string {
+  const c = v * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = v - c;
+  const hue = ((h % 360) + 360) % 360;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  if (hue < 60) { r = c; g = x; }
+  else if (hue < 120) { r = x; g = c; }
+  else if (hue < 180) { g = c; b = x; }
+  else if (hue < 240) { g = x; b = c; }
+  else if (hue < 300) { r = x; b = c; }
+  else { r = c; b = x; }
+  const toHex = (n: number) => Math.round((n + m) * 255).toString(16).padStart(2, '0');
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
 export default function UserManagement() {
   const {
     users,
@@ -220,6 +264,18 @@ export default function UserManagement() {
   const [themeImportText, setThemeImportText] = useState('');
   const [themeBusy, setThemeBusy] = useState(false);
   const [logoPicker, setLogoPicker] = useState<{ id: string; top: number; left: number } | null>(null);
+  const [colorPicker, setColorPicker] = useState<{
+    themeId: string;
+    kind: 'color' | 'logo';
+    key: string;
+    label: string;
+    value: string;
+    h: number;
+    s: number;
+    v: number;
+    top: number;
+    left: number;
+  } | null>(null);
   const themeFileInputRef = useRef<HTMLInputElement>(null);
   const [feedback, setFeedback] = useState('');
   const [govKeyword, setGovKeyword] = useState('');
@@ -598,42 +654,92 @@ export default function UserManagement() {
     }
   };
 
-  const saveThemeColors = async (item: CustomThemeItem, patch: Record<string, string>) => {
+  const [pendingThemeEdits, setPendingThemeEdits] = useState<
+    Record<string, { name: string; description: string; logo: ThemeLogo; colors: Record<string, string> }>
+  >({});
+  const [applyingThemeEdits, setApplyingThemeEdits] = useState(false);
+
+  const buildMergedThemes = (
+    editsMap: Record<string, { name: string; description: string; logo: ThemeLogo; colors: Record<string, string> }>
+  ): CustomThemeItem[] =>
+    uniqueThemes.map((t) => {
+      const edit = editsMap[t.id];
+      if (!edit) return t;
+      return {
+        ...t,
+        name: edit.name,
+        description: edit.description,
+        logo: edit.logo,
+        colors: { ...(t.colors || {}), ...edit.colors },
+      };
+    });
+
+  const getEffectiveThemeItem = (item: CustomThemeItem): CustomThemeItem => {
+    const edit = pendingThemeEdits[item.id];
+    if (!edit) return item;
+    return {
+      ...item,
+      name: edit.name,
+      description: edit.description,
+      logo: edit.logo,
+      colors: { ...(item.colors || {}), ...edit.colors },
+    };
+  };
+
+  const stageThemePreview = (
+    item: CustomThemeItem,
+    nextPatch: {
+      name?: string;
+      description?: string;
+      logoPatch?: Partial<ThemeLogo>;
+      colorPatch?: Record<string, string>;
+    }
+  ) => {
+    if (item.readonly) return;
+    const base = getEffectiveThemeItem(item);
+    const nextEdit = {
+      name: nextPatch.name !== undefined ? nextPatch.name : base.name,
+      description: nextPatch.description !== undefined ? nextPatch.description : base.description || '',
+      logo: { ...getThemeLogo(base), ...(nextPatch.logoPatch || {}) },
+      colors: { ...(base.colors || {}), ...(nextPatch.colorPatch || {}) },
+    };
+    const nextEditsMap = { ...pendingThemeEdits, [item.id]: nextEdit };
+    setPendingThemeEdits(nextEditsMap);
+    previewThemeFromList(item.id, buildMergedThemes(nextEditsMap));
+  };
+
+  const handleApplyPendingThemeEdits = async () => {
+    const entries = Object.entries(pendingThemeEdits);
+    if (entries.length === 0) return;
+    setApplyingThemeEdits(true);
     setThemeBusy(true);
     try {
-      const normalizedPatch: Record<string, string> = {};
-      for (const [k, v] of Object.entries(patch)) {
-        normalizedPatch[k] = toColorInputValue(v);
+      for (const [themeId, edit] of entries) {
+        const origin = uniqueThemes.find((t) => t.id === themeId);
+        if (!origin || origin.readonly) continue;
+        await updateCustomTheme(themeId, {
+          name: edit.name,
+          description: edit.description,
+          logo: edit.logo,
+          colors: edit.colors,
+        });
       }
-      await updateCustomTheme(item.id, {
-        name: item.name,
-        description: item.description || '',
-        logo: getThemeLogo(item),
-        colors: { ...(item.colors || {}), ...normalizedPatch },
-      });
-      setFeedback(`已更新主题「${item.name}」配色`);
+      setPendingThemeEdits({});
+      await fetchThemes();
+      setFeedback(`已应用并保存 ${entries.length} 个主题的修改`);
     } catch (err) {
-      setFeedback(err instanceof Error ? err.message : '更新主题配色失败');
+      setFeedback(err instanceof Error ? err.message : '应用主题修改失败');
     } finally {
+      setApplyingThemeEdits(false);
       setThemeBusy(false);
     }
   };
 
-  const saveThemeLogo = async (item: CustomThemeItem, patch: Partial<ThemeLogo>) => {
-    setThemeBusy(true);
-    try {
-      await updateCustomTheme(item.id, {
-        name: item.name,
-        description: item.description || '',
-        logo: { ...getThemeLogo(item), ...patch },
-        colors: item.colors || {},
-      });
-      setFeedback(`已更新主题「${item.name}」Logo`);
-    } catch (err) {
-      setFeedback(err instanceof Error ? err.message : '更新 Logo 失败');
-    } finally {
-      setThemeBusy(false);
-    }
+  const handleCancelPendingThemeEdits = () => {
+    if (Object.keys(pendingThemeEdits).length === 0) return;
+    setPendingThemeEdits({});
+    previewThemeFromList(theme, uniqueThemes);
+    setFeedback('已撤销未应用的主题颜色与 Logo 修改');
   };
 
   const handleApplyTheme = async (item: CustomThemeItem) => {
@@ -1290,6 +1396,30 @@ export default function UserManagement() {
               />
               <button
                 type="button"
+                disabled={Object.keys(pendingThemeEdits).length === 0 || applyingThemeEdits}
+                onClick={() => void handleApplyPendingThemeEdits()}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-[11px] font-medium text-white transition-colors"
+              >
+                <Check size={13} />
+                <span>
+                  {applyingThemeEdits
+                    ? '应用中...'
+                    : Object.keys(pendingThemeEdits).length > 0
+                    ? `应用修改 (${Object.keys(pendingThemeEdits).length})`
+                    : '应用修改'}
+                </span>
+              </button>
+              <button
+                type="button"
+                disabled={Object.keys(pendingThemeEdits).length === 0 || applyingThemeEdits}
+                onClick={handleCancelPendingThemeEdits}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1a1d24] hover:bg-[#232731] disabled:opacity-40 disabled:cursor-not-allowed border border-gray-700 text-[11px] text-gray-200 transition-colors"
+              >
+                <X size={13} />
+                <span>取消修改</span>
+              </button>
+              <button
+                type="button"
                 onClick={() => themeFileInputRef.current?.click()}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1a1d24] hover:bg-[#232731] border border-gray-700 text-[11px] text-gray-200"
               >
@@ -1333,7 +1463,8 @@ export default function UserManagement() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-800">
-                {uniqueThemes.map((item) => {
+                {uniqueThemes.map((rawItem) => {
+                  const item = getEffectiveThemeItem(rawItem);
                   const isApplied = theme === item.id;
                   const isMenuActive = item.activeInMenu !== false;
                   const locked = Boolean(item.readonly);
@@ -1378,6 +1509,7 @@ export default function UserManagement() {
                             }
                             onClick={(e) => {
                               const rect = e.currentTarget.getBoundingClientRect();
+                              setColorPicker(null);
                               setLogoPicker((prev) =>
                                 prev?.id === item.id
                                   ? null
@@ -1392,44 +1524,82 @@ export default function UserManagement() {
                           >
                             {renderThemeLogo(item, 12)}
                           </button>
-                          {THEME_LOGO_FIELDS.map((field) => (
-                            <label
-                              key={field.key}
-                              title={field.label}
-                              className="relative w-3.5 h-3.5 rounded-sm border border-gray-600 shrink-0 cursor-pointer"
-                              style={{ backgroundColor: toColorInputValue(getThemeLogo(item)[field.key]) }}
-                            >
-                              <input
-                                type="color"
+                          {THEME_LOGO_FIELDS.map((field) => {
+                            const hexVal = toColorInputValue(getThemeLogo(item)[field.key]);
+                            return (
+                              <button
+                                key={field.key}
+                                type="button"
                                 disabled={locked}
-                                value={toColorInputValue(getThemeLogo(item)[field.key])}
-                                onChange={(e) => void saveThemeLogo(item, { [field.key]: e.target.value })}
-                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-default"
+                                title={`${field.label}（${hexVal}）`}
+                                onClick={(e) => {
+                                  const rect = e.currentTarget.getBoundingClientRect();
+                                  setLogoPicker(null);
+                                  const hsv = hexToHsv(hexVal);
+                                  setColorPicker((prev) =>
+                                    prev &&
+                                    prev.themeId === item.id &&
+                                    prev.kind === 'logo' &&
+                                    prev.key === field.key
+                                      ? null
+                                      : {
+                                          themeId: item.id,
+                                          kind: 'logo',
+                                          key: field.key,
+                                          label: `Logo ${field.label}`,
+                                          value: hexVal,
+                                          ...hsv,
+                                          top: rect.bottom + 6,
+                                          left: rect.left,
+                                        }
+                                  );
+                                }}
+                                className="w-3.5 h-3.5 rounded-sm border border-gray-600 shrink-0 cursor-pointer disabled:cursor-default"
+                                style={{ backgroundColor: hexVal }}
                               />
-                            </label>
-                          ))}
+                            );
+                          })}
                         </div>
                       </td>
                       <td className="px-3 py-2 max-w-[180px] truncate" title={item.description || ''}>
                         {item.description || '-'}
                       </td>
-                      {THEME_COLOR_FIELDS.map((field) => (
-                        <td key={field.key} className="px-1.5 py-2 text-center">
-                          <label
-                            title={`${field.description}（${field.key}）`}
-                            className="relative inline-block w-6 h-6 rounded border border-gray-600 cursor-pointer"
-                            style={{ backgroundColor: toColorInputValue(item.colors?.[field.key]) }}
-                          >
-                            <input
-                              type="color"
+                      {THEME_COLOR_FIELDS.map((field) => {
+                        const hexVal = toColorInputValue(item.colors?.[field.key]);
+                        return (
+                          <td key={field.key} className="px-1.5 py-2 text-center">
+                            <button
+                              type="button"
                               disabled={locked}
-                              value={toColorInputValue(item.colors?.[field.key])}
-                              onChange={(e) => void saveThemeColors(item, { [field.key]: e.target.value })}
-                              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-default"
+                              title={`${field.description}（${field.key}：${hexVal}）`}
+                              onClick={(e) => {
+                                const rect = e.currentTarget.getBoundingClientRect();
+                                setLogoPicker(null);
+                                const hsv = hexToHsv(hexVal);
+                                setColorPicker((prev) =>
+                                  prev &&
+                                  prev.themeId === item.id &&
+                                  prev.kind === 'color' &&
+                                  prev.key === field.key
+                                    ? null
+                                    : {
+                                        themeId: item.id,
+                                        kind: 'color',
+                                        key: field.key,
+                                        label: `${field.label} (${field.key})`,
+                                        value: hexVal,
+                                        ...hsv,
+                                        top: rect.bottom + 6,
+                                        left: rect.left,
+                                      }
+                                );
+                              }}
+                              className="inline-block w-6 h-6 rounded border border-gray-600 cursor-pointer disabled:cursor-default"
+                              style={{ backgroundColor: hexVal }}
                             />
-                          </label>
-                        </td>
-                      ))}
+                          </td>
+                        );
+                      })}
                       <td className="px-3 py-2 whitespace-nowrap">
                         <div className="flex items-center gap-1.5">
                           <button
@@ -1655,7 +1825,8 @@ export default function UserManagement() {
         (() => {
           const target = uniqueThemes.find((item) => item.id === logoPicker.id);
           if (!target) return null;
-          const currentIcon = getThemeLogo(target).icon;
+          const effectiveTarget = getEffectiveThemeItem(target);
+          const currentIcon = getThemeLogo(effectiveTarget).icon;
           return (
             <div
               className="fixed z-[60] w-64 rounded-xl border border-gray-600 bg-[#1a1d24] p-2 shadow-2xl"
@@ -1682,14 +1853,14 @@ export default function UserManagement() {
                     type="button"
                     title={LOGO_ICON_LABELS[icon]}
                     onClick={() => {
-                      void saveThemeLogo(target, { icon });
+                      stageThemePreview(target, { logoPatch: { icon } });
                       setLogoPicker(null);
                     }}
                     className={`h-9 rounded-lg flex items-center justify-center ${
                       currentIcon === icon ? 'bg-blue-600/30 text-blue-300' : 'text-gray-300 hover:bg-[#323640]'
                     }`}
                   >
-                    {renderThemeLogo({ ...target, logo: { ...getThemeLogo(target), icon } }, 16)}
+                    {renderThemeLogo({ ...effectiveTarget, logo: { ...getThemeLogo(effectiveTarget), icon } }, 16)}
                   </button>
                 ))}
               </div>
@@ -1740,6 +1911,135 @@ export default function UserManagement() {
           </div>
         </div>
       )}
+
+      {colorPicker &&
+        (() => {
+          const target = uniqueThemes.find((t) => t.id === colorPicker.themeId);
+          if (!target) return null;
+          const effectiveTarget = getEffectiveThemeItem(target);
+          const currentHex =
+            colorPicker.kind === 'logo'
+              ? toColorInputValue(getThemeLogo(effectiveTarget)[colorPicker.key as 'fg' | 'bg'])
+              : toColorInputValue(effectiveTarget.colors?.[colorPicker.key]);
+
+          const applyHex = (nextHex: string, hsv?: { h: number; s: number; v: number }) => {
+            const norm = toColorInputValue(nextHex);
+            const parts = hsv || hexToHsv(norm);
+            setColorPicker((prev) => (prev ? { ...prev, value: norm, ...parts } : null));
+            if (colorPicker.kind === 'logo') {
+              stageThemePreview(target, {
+                logoPatch: { [colorPicker.key]: norm } as Partial<ThemeLogo>,
+              });
+            } else {
+              stageThemePreview(target, { colorPatch: { [colorPicker.key]: norm } });
+            }
+          };
+
+          const updateFromPointer = (e: ReactPointerEvent<HTMLDivElement>) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const s = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+            const v = Math.max(0, Math.min(1, 1 - (e.clientY - rect.top) / rect.height));
+            const parts = { h: colorPicker.h, s, v };
+            applyHex(hsvToHex(parts.h, parts.s, parts.v), parts);
+          };
+
+          const presets = [
+            '#1e2128', '#252830', '#16181d', '#ffffff', '#f3f4f6', '#ede7d9',
+            '#ef4444', '#f43f5e', '#ec4899', '#a855f7', '#3b82f6', '#06b6d4',
+            '#10b981', '#eab308', '#f97316', '#64748b',
+          ];
+
+          return (
+            <div
+              className="fixed z-[65] w-72 rounded-xl border border-gray-600 bg-[#1a1d24] p-3 shadow-2xl space-y-2.5"
+              style={{
+                top: Math.max(8, Math.min(colorPicker.top, window.innerHeight - 330)),
+                left: Math.min(colorPicker.left, window.innerWidth - 296),
+              }}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-medium text-gray-200 truncate" title={colorPicker.label}>
+                  {colorPicker.label}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setColorPicker(null)}
+                  className="text-gray-400 hover:text-white shrink-0"
+                  title="关闭色盘"
+                >
+                  <X size={13} />
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span
+                  className="w-8 h-8 rounded-lg border border-gray-600 shrink-0"
+                  style={{ backgroundColor: currentHex }}
+                />
+                <input
+                  type="text"
+                  value={colorPicker.value}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setColorPicker((prev) => (prev ? { ...prev, value: val } : null));
+                    if (/^#[0-9a-fA-F]{6}$/.test(val.trim())) applyHex(val.trim());
+                  }}
+                  className="flex-1 bg-[#14161b] border border-gray-700 rounded-lg px-2 py-1 text-xs font-mono text-gray-100 focus:outline-none focus:border-blue-500"
+                  placeholder="#rrggbb"
+                />
+              </div>
+
+              <div
+                className="relative w-full h-28 rounded-lg border border-gray-700 cursor-crosshair overflow-hidden"
+                style={{
+                  background: `linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, hsl(${colorPicker.h}, 100%, 50%))`,
+                }}
+                onPointerDown={(e) => {
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                  updateFromPointer(e);
+                }}
+                onPointerMove={(e) => {
+                  if (e.currentTarget.hasPointerCapture(e.pointerId)) updateFromPointer(e);
+                }}
+              >
+                <span
+                  className="absolute w-3 h-3 rounded-full border-2 border-white shadow pointer-events-none -translate-x-1/2 -translate-y-1/2"
+                  style={{ left: `${colorPicker.s * 100}%`, top: `${(1 - colorPicker.v) * 100}%` }}
+                />
+              </div>
+
+              <input
+                type="range"
+                min={0}
+                max={359}
+                value={Math.min(359, Math.round(colorPicker.h))}
+                onChange={(e) => {
+                  const h = Number(e.target.value);
+                  applyHex(hsvToHex(h, colorPicker.s, colorPicker.v), { h, s: colorPicker.s, v: colorPicker.v });
+                }}
+                className="w-full h-2 rounded-full appearance-none cursor-pointer"
+                style={{ background: 'linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00)' }}
+              />
+
+              <div className="grid grid-cols-8 gap-1">
+                {presets.map((hex) => (
+                  <button
+                    key={hex}
+                    type="button"
+                    title={hex}
+                    onClick={() => applyHex(hex)}
+                    className={`w-6 h-6 rounded border ${
+                      currentHex.toLowerCase() === hex.toLowerCase()
+                        ? 'border-blue-400 scale-105'
+                        : 'border-gray-700'
+                    }`}
+                    style={{ backgroundColor: hex }}
+                  />
+                ))}
+              </div>
+            </div>
+          );
+        })()}
 
       <AdminThemeModal
         key={themeEditTarget ?? '__new__'}
