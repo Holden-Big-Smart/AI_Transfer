@@ -158,6 +158,7 @@ function toColorInputValue(value: unknown): string {
   if (/^#[0-9a-f]{3}$/.test(raw)) {
     return `#${raw[1]}${raw[1]}${raw[2]}${raw[2]}${raw[3]}${raw[3]}`;
   }
+  if (/^#[0-9a-f]{8}$/.test(raw)) return raw.slice(0, 7);
   return '#334155';
 }
 
@@ -600,11 +601,15 @@ export default function UserManagement() {
   const saveThemeColors = async (item: CustomThemeItem, patch: Record<string, string>) => {
     setThemeBusy(true);
     try {
+      const normalizedPatch: Record<string, string> = {};
+      for (const [k, v] of Object.entries(patch)) {
+        normalizedPatch[k] = toColorInputValue(v);
+      }
       await updateCustomTheme(item.id, {
         name: item.name,
         description: item.description || '',
         logo: getThemeLogo(item),
-        colors: { ...(item.colors || {}), ...patch },
+        colors: { ...(item.colors || {}), ...normalizedPatch },
       });
       setFeedback(`已更新主题「${item.name}」配色`);
     } catch (err) {
@@ -1396,7 +1401,7 @@ export default function UserManagement() {
                             >
                               <input
                                 type="color"
-                                disabled={locked || themeBusy}
+                                disabled={locked}
                                 value={toColorInputValue(getThemeLogo(item)[field.key])}
                                 onChange={(e) => void saveThemeLogo(item, { [field.key]: e.target.value })}
                                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-default"
@@ -1417,7 +1422,7 @@ export default function UserManagement() {
                           >
                             <input
                               type="color"
-                              disabled={locked || themeBusy}
+                              disabled={locked}
                               value={toColorInputValue(item.colors?.[field.key])}
                               onChange={(e) => void saveThemeColors(item, { [field.key]: e.target.value })}
                               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-default"

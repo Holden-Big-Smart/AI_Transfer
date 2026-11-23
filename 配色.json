@@ -1,0 +1,27 @@
+{
+  "name": "赛博朋克",
+  "description": "霓虹夜色赛博朋克主题，紫蓝主调搭配洋红霓虹点缀",
+  "logoKey": "pulse",
+  "logo": {
+    "bg": "#0f0520",
+    "fg": "#ff2ae0",
+    "border": "#2088ff"
+  },
+  "colors": {
+    "--bg-base": "#050310",
+    "--bg-surface": "#100824",
+    "--bg-surface-alt": "#180c33",
+    "--bg-sidebar": "#090418",
+    "--bg-panel": "#14092c",
+    "--bg-input": "#1c1038",
+    "--bg-hover": "#241448",
+    "--bg-hover-strong": "#351a66",
+    "--text-primary": "#f0f2ff",
+    "--text-secondary": "#c8b8ff",
+    "--text-muted": "#9977dd",
+    "--text-subtle": "#664499",
+    "--border-main": "#ff2ae0",
+    "--border-subtle": "#2088ff",
+    "--chart-free": "#120728"
+  }
+}
