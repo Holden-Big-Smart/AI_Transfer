@@ -8,7 +8,7 @@ import Notes from './pages/Notes';
 import ScreenShare from './pages/ScreenShare';
 import UserManagement from './pages/UserManagement';
 import Login from './pages/Login';
-import { useAuthStore, applyThemeToDom } from './store/useAuthStore';
+import { useAuthStore, applyThemeToDom, isAnyAdmin } from './store/useAuthStore';
 import { useNoteStore } from './store/useNoteStore';
 import { resolveDocumentTitle } from './config/siteConfig';
 import { KeyRound, X, AlertCircle, Save } from 'lucide-react';
@@ -77,6 +77,7 @@ function App() {
   };
 
   const canUseAi = currentUser.role !== 'guest';
+  const canManageUsers = isAnyAdmin(currentUser);
 
   return (
     <Router>
@@ -94,7 +95,7 @@ function App() {
             />
             <Route path="/notes/*" element={<Notes />} />
             <Route path="/screen-share/*" element={<ScreenShare />} />
-            {currentUser.role === 'admin' && (
+            {canManageUsers && (
               <Route path="/users/*" element={<UserManagement />} />
             )}
             <Route path="*" element={<Navigate to="/file-center" replace />} />

@@ -1,4 +1,4 @@
-﻿import {
+import {
   useState,
   useEffect,
   useCallback,
@@ -10,6 +10,7 @@ import {
   Users,
   FolderKanban,
   Cpu,
+  Shield,
   ShieldCheck,
   Palette,
   Plus,
@@ -29,6 +30,8 @@ import {
 } from 'lucide-react';
 import {
   useAuthStore,
+  isAnyAdmin,
+  isSuperAdmin,
   THEME_COLOR_FIELDS,
   LOGO_ICONS,
   LOGO_ICON_LABELS,
@@ -206,6 +209,28 @@ function hsvToHex(h: number, s: number, v: number): string {
   return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
 }
 
+function getRoleMeta(role: UserAccount['role']) {
+  if (role === 'admin') {
+    return {
+      label: '超级管理员',
+      badgeCls: 'bg-green-950/60 text-green-300 border-green-500/30',
+      avatarCls: 'bg-green-600/20 text-green-400',
+    };
+  }
+  if (role === 'sub_admin') {
+    return {
+      label: '管理员',
+      badgeCls: 'bg-amber-950/60 text-amber-300 border-amber-500/35',
+      avatarCls: 'bg-amber-600/20 text-amber-300',
+    };
+  }
+  return {
+    label: '普通成员',
+    badgeCls: 'bg-blue-950/60 text-blue-300 border-blue-500/30',
+    avatarCls: 'bg-blue-600/20 text-blue-400',
+  };
+}
+
 export default function UserManagement() {
   const {
     users,
@@ -213,6 +238,7 @@ export default function UserManagement() {
     theme,
     themes,
     createUser,
+    updateUserRole,
     deleteUser,
     fetchUsers,
     updateUserProjects,
@@ -224,7 +250,9 @@ export default function UserManagement() {
     deleteCustomTheme,
   } = useAuthStore();
 
-  const isAdmin = currentUser?.role === 'admin';
+  const isSuper = isSuperAdmin(currentUser);
+  const isAdmin = isAnyAdmin(currentUser);
+
   const uniqueThemes = useMemo(() => {
     const seen = new Set<string>();
     return themes.filter((item) => {
@@ -233,13 +261,20 @@ export default function UserManagement() {
       return true;
     });
   }, [themes]);
+
   const [activeTab, setActiveTab] = useState<GovTab>('members');
 
   const [createOpen, setCreateOpen] = useState(false);
   const [newUsername, setNewUsername] = useState('');
   const [newName, setNewName] = useState('');
+  const [newRole, setNewRole] = useState<'user' | 'sub_admin'>('user');
   const [creating, setCreating] = useState(false);
-  const [generatedResult, setGeneratedResult] = useState<{ username: string; pass: string } | null>(null);
+  const [roleBusyId, setRoleBusyId] = useState<string | null>(null);
+  const [generatedResult, setGeneratedResult] = useState<{
+    username: string;
+    pass: string;
+    role: 'user' | 'sub_admin';
+  } | null>(null);
   const [hasCopied, setHasCopied] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<UserAccount | null>(null);
   const [permTarget, setPermTarget] = useState<UserAccount | null>(null);
@@ -436,17 +471,28 @@ export default function UserManagement() {
     if (!newUsername.trim()) return;
     setCreating(true);
     setFeedback('');
+    const targetRole: 'user' | 'sub_admin' = isSuper ? newRole : 'user';
     try {
       const result = await createUser(
         newUsername.trim(),
         newName.trim() || newUsername.trim(),
-        ['通用公用库']
+        ['通用公用库'],
+        targetRole
       );
-      setGeneratedResult({ username: newUsername.trim(), pass: result.initialPass });
+      setGeneratedResult({
+        username: newUsername.trim(),
+        pass: result.initialPass,
+        role: targetRole,
+      });
       setNewUsername('');
       setNewName('');
+      setNewRole('user');
       setCreateOpen(false);
-      setFeedback('已创建成员账号，请复制初始密码');
+      setFeedback(
+        targetRole === 'sub_admin'
+          ? '已创建管理员账号，请复制初始密码'
+          : '已创建成员账号，请复制初始密码'
+      );
       await fetchUsers();
     } catch (err) {
       setFeedback(err instanceof Error ? err.message : '创建账号失败');
@@ -455,10 +501,30 @@ export default function UserManagement() {
     }
   };
 
+  const handleToggleUserRole = async (u: UserAccount) => {
+    if (!isSuper || u.role === 'admin' || u.id === currentUser?.id) return;
+    const nextRole: 'user' | 'sub_admin' = u.role === 'sub_admin' ? 'user' : 'sub_admin';
+    const actionLabel = nextRole === 'sub_admin' ? '设为管理员' : '降为普通成员';
+    if (!confirm(`确定将账号「${u.name || u.username}」(@${u.username}) ${actionLabel}吗？`)) {
+      return;
+    }
+    setRoleBusyId(u.id);
+    setFeedback('');
+    try {
+      await updateUserRole(u.id, nextRole);
+      setFeedback(`已将「${u.name || u.username}」${actionLabel}`);
+    } catch (err) {
+      setFeedback(err instanceof Error ? err.message : '修改账户身份失败');
+    } finally {
+      setRoleBusyId(null);
+    }
+  };
+
   const copyCredentials = () => {
     if (!generatedResult) return;
+    const roleLabel = generatedResult.role === 'sub_admin' ? '管理员' : '普通成员';
     navigator.clipboard.writeText(
-      `账号: ${generatedResult.username}\n初始随机密码: ${generatedResult.pass}\n请登录系统后根据提示自行修改密码。`
+      `账号: ${generatedResult.username}\n身份: ${roleLabel}\n初始随机密码: ${generatedResult.pass}\n请登录系统后根据提示自行修改密码。`
     );
     setHasCopied(true);
     window.setTimeout(() => setHasCopied(false), 2000);
@@ -844,9 +910,22 @@ export default function UserManagement() {
           <h1 className="text-xl font-bold text-white flex items-center gap-2">
             <ShieldCheck size={20} className="text-blue-400" />
             <span>系统管理中心</span>
+            {isAdmin && (
+              <span
+                className={`text-[11px] font-medium px-2 py-0.5 rounded-full border ${
+                  isSuper
+                    ? 'bg-green-950/60 text-green-300 border-green-500/35'
+                    : 'bg-amber-950/60 text-amber-300 border-amber-500/35'
+                }`}
+              >
+                {isSuper ? '超级管理员' : '管理员'}
+              </span>
+            )}
           </h1>
           <p className="text-xs text-gray-400 mt-1">
-            统一管理成员账号、知识库项目授权、本地 AI 算力与记忆、云端治理审计及全局主题风格。
+            {isSuper
+              ? '拥有系统全部管理权限，包括创建管理员与调整其他账户身份。'
+              : '拥有除修改其他账户身份之外的全部系统管理与治理权限。'}
           </p>
         </div>
 
@@ -864,7 +943,10 @@ export default function UserManagement() {
           {activeTab === 'members' && isAdmin && (
             <button
               type="button"
-              onClick={() => setCreateOpen(true)}
+              onClick={() => {
+                setNewRole('user');
+                setCreateOpen(true);
+              }}
               className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-xs font-medium text-white"
             >
               <Plus size={14} />
@@ -915,7 +997,9 @@ export default function UserManagement() {
       {generatedResult && (
         <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 rounded-xl bg-emerald-950/60 border border-emerald-500/30 text-xs text-emerald-200">
           <div className="min-w-0">
-            <div className="font-semibold">新建账号初始凭据</div>
+            <div className="font-semibold">
+              新建账号初始凭据（{generatedResult.role === 'sub_admin' ? '管理员' : '普通成员'}）
+            </div>
             <div className="mt-1 break-all font-mono">
               账号：{generatedResult.username} ｜ 初始密码：{generatedResult.pass}
             </div>
@@ -946,95 +1030,130 @@ export default function UserManagement() {
             <div className="col-span-3">用户与登录账号</div>
             <div className="col-span-2">系统角色</div>
             <div className="col-span-3">授权知识库项目</div>
-            <div className="col-span-2">密码状态</div>
-            <div className="col-span-2 text-right">操作</div>
+            <div className="col-span-1">状态</div>
+            <div className="col-span-3 text-right">操作</div>
           </div>
 
           <div className="divide-y divide-gray-800">
-            {users.map((u) => (
-              <div
-                key={u.id}
-                className="grid grid-cols-12 gap-4 px-6 py-4 items-center text-xs hover:bg-[var(--bg-hover)] transition-colors"
-              >
-                <div className="col-span-3 flex items-center gap-3 min-w-0">
-                  <div
-                    className={`relative w-8 h-8 rounded-lg overflow-hidden flex items-center justify-center font-bold text-xs shrink-0 ${
-                      u.role === 'admin'
-                        ? 'bg-green-600/20 text-green-400'
-                        : 'bg-blue-600/20 text-blue-400'
-                    }`}
-                  >
-                    <span className="pointer-events-none select-none">
-                      {(u.name || u.username || '?').slice(0, 1)}
+            {users.map((u) => {
+              const roleMeta = getRoleMeta(u.role);
+              const isSelf = u.id === currentUser?.id;
+              const canSwitchRole = isSuper && u.role !== 'admin' && !isSelf;
+              const canDeleteTarget =
+                isAdmin &&
+                u.role !== 'admin' &&
+                u.username !== 'admin' &&
+                !isSelf &&
+                (isSuper || u.role !== 'sub_admin');
+
+              return (
+                <div
+                  key={u.id}
+                  className="grid grid-cols-12 gap-4 px-6 py-4 items-center text-xs hover:bg-[var(--bg-hover)] transition-colors"
+                >
+                  <div className="col-span-3 flex items-center gap-3 min-w-0">
+                    <div
+                      className={`relative w-8 h-8 rounded-lg overflow-hidden flex items-center justify-center font-bold text-xs shrink-0 ${roleMeta.avatarCls}`}
+                    >
+                      <span className="pointer-events-none select-none">
+                        {(u.name || u.username || '?').slice(0, 1)}
+                      </span>
+                      {u.avatarUrl && (
+                        <img
+                          src={u.avatarUrl}
+                          alt={u.name || u.username || '头像'}
+                          className="absolute inset-0 w-full h-full object-cover"
+                          onError={(e) => {
+                            (e.currentTarget as HTMLImageElement).style.display = 'none';
+                          }}
+                        />
+                      )}
+                    </div>
+                    <div className="truncate">
+                      <div className="font-semibold text-gray-100 truncate">
+                        {u.name || u.username}
+                        {isSelf && <span className="text-[10px] text-gray-400 ml-1">(当前)</span>}
+                      </div>
+                      <div className="text-[11px] text-gray-400 truncate">@{u.username}</div>
+                    </div>
+                  </div>
+
+                  <div className="col-span-2">
+                    <span
+                      className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium border ${roleMeta.badgeCls}`}
+                    >
+                      {roleMeta.label}
                     </span>
-                    {u.avatarUrl && (
-                      <img
-                        src={u.avatarUrl}
-                        alt={u.name || u.username || '头像'}
-                        className="absolute inset-0 w-full h-full object-cover"
-                        onError={(e) => {
-                          (e.currentTarget as HTMLImageElement).style.display = 'none';
-                        }}
-                      />
+                  </div>
+
+                  <div className="col-span-3 flex flex-wrap gap-1.5">
+                    {(u.allowedProjects || ['通用公用库']).map((proj) => (
+                      <span
+                        key={proj}
+                        className="px-2 py-0.5 rounded-md bg-[#1a1d24] border border-gray-700 text-[11px] text-gray-300"
+                      >
+                        {proj}
+                      </span>
+                    ))}
+                  </div>
+
+                  <div className="col-span-1 text-green-400 font-medium">正常</div>
+
+                  <div className="col-span-3 flex items-center justify-end gap-1.5 flex-wrap">
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        onClick={() => openPermModal(u)}
+                        className="inline-flex items-center justify-center gap-1 px-2.5 py-1 rounded-lg bg-blue-600/15 hover:bg-blue-600/25 text-blue-300 border border-blue-500/30 text-[11px] shrink-0"
+                      >
+                        <SlidersHorizontal size={12} />
+                        <span>项目权限</span>
+                      </button>
+                    )}
+
+                    {canSwitchRole && (
+                      <button
+                        type="button"
+                        disabled={roleBusyId === u.id}
+                        onClick={() => void handleToggleUserRole(u)}
+                        className={`inline-flex items-center justify-center gap-1 px-2.5 py-1 rounded-lg border text-[11px] shrink-0 disabled:opacity-40 transition-colors ${
+                          u.role === 'sub_admin'
+                            ? 'bg-gray-700/40 hover:bg-gray-700/70 text-gray-200 border-gray-600'
+                            : 'bg-amber-600/15 hover:bg-amber-600/25 text-amber-300 border-amber-500/35'
+                        }`}
+                        title={
+                          u.role === 'sub_admin'
+                            ? '撤销管理员身份，降级为普通成员'
+                            : '授予管理员身份（拥有除修改身份外的一切管理权限）'
+                        }
+                      >
+                        <Shield size={12} />
+                        <span>
+                          {roleBusyId === u.id
+                            ? '处理中...'
+                            : u.role === 'sub_admin'
+                              ? '降为成员'
+                              : '设为管理员'}
+                        </span>
+                      </button>
+                    )}
+
+                    {canDeleteTarget ? (
+                      <button
+                        type="button"
+                        onClick={() => setDeleteTarget(u)}
+                        className="w-6 h-6 inline-flex items-center justify-center rounded-lg text-gray-400 hover:text-rose-400 hover:bg-rose-500/10 shrink-0"
+                        title="删除账号"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    ) : (
+                      <span className="w-6 h-6 inline-block shrink-0" />
                     )}
                   </div>
-                  <div className="truncate">
-                    <div className="font-semibold text-gray-100 truncate">{u.name || u.username}</div>
-                    <div className="text-[11px] text-gray-400 truncate">@{u.username}</div>
-                  </div>
                 </div>
-
-                <div className="col-span-2">
-                  <span
-                    className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium border ${
-                      u.role === 'admin'
-                        ? 'bg-green-950/60 text-green-300 border-green-500/30'
-                        : 'bg-blue-950/60 text-blue-300 border-blue-500/30'
-                    }`}
-                  >
-                    {u.role === 'admin' ? '超级管理员' : '普通成员'}
-                  </span>
-                </div>
-
-                <div className="col-span-3 flex flex-wrap gap-1.5">
-                  {(u.allowedProjects || ['通用公用库']).map((proj) => (
-                    <span
-                      key={proj}
-                      className="px-2 py-0.5 rounded-md bg-[#1a1d24] border border-gray-700 text-[11px] text-gray-300"
-                    >
-                      {proj}
-                    </span>
-                  ))}
-                </div>
-
-                <div className="col-span-2 text-green-400 font-medium">正常</div>
-
-                <div className="col-span-2 flex items-center justify-end gap-1.5">
-                  {isAdmin && (
-                    <button
-                      type="button"
-                      onClick={() => openPermModal(u)}
-                      className="inline-flex items-center justify-center gap-1 px-2.5 py-1 rounded-lg bg-blue-600/15 hover:bg-blue-600/25 text-blue-300 border border-blue-500/30 text-[11px] shrink-0"
-                    >
-                      <SlidersHorizontal size={12} />
-                      <span>项目权限</span>
-                    </button>
-                  )}
-                  {isAdmin && u.username !== 'admin' ? (
-                    <button
-                      type="button"
-                      onClick={() => setDeleteTarget(u)}
-                      className="w-6 h-6 inline-flex items-center justify-center rounded-lg text-gray-400 hover:text-rose-400 hover:bg-rose-500/10 shrink-0"
-                      title="删除账号"
-                    >
-                      <Trash2 size={13} />
-                    </button>
-                  ) : (
-                    <span className="w-6 h-6 inline-block shrink-0" />
-                  )}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -1067,7 +1186,7 @@ export default function UserManagement() {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {availableProjects.map((proj) => {
               const authUsers = users.filter(
-                (u) => u.role === 'admin' || (u.allowedProjects || []).includes(proj)
+                (u) => isAnyAdmin(u) || (u.allowedProjects || []).includes(proj)
               );
               return (
                 <div
@@ -1689,8 +1808,41 @@ export default function UserManagement() {
                 className="w-full bg-[#1a1d24] border border-gray-700 rounded-lg px-3 py-2 text-xs text-white"
               />
             </div>
+
+            {isSuper && (
+              <div>
+                <label className="block text-xs text-gray-400 mb-1.5">账号身份</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setNewRole('user')}
+                    className={`px-3 py-2 rounded-xl border text-xs text-left transition-colors ${
+                      newRole === 'user'
+                        ? 'bg-blue-600/20 border-blue-500/60 text-blue-200 font-medium'
+                        : 'bg-[#1a1d24] border-gray-700 text-gray-400 hover:text-gray-200'
+                    }`}
+                  >
+                    <div>普通成员</div>
+                    <div className="text-[10px] opacity-75 mt-0.5">常规网盘、笔记与 AI 权限</div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setNewRole('sub_admin')}
+                    className={`px-3 py-2 rounded-xl border text-xs text-left transition-colors ${
+                      newRole === 'sub_admin'
+                        ? 'bg-amber-600/20 border-amber-500/60 text-amber-200 font-medium'
+                        : 'bg-[#1a1d24] border-gray-700 text-gray-400 hover:text-gray-200'
+                    }`}
+                  >
+                    <div>管理员</div>
+                    <div className="text-[10px] opacity-75 mt-0.5">除修改账户身份外的全部管理权</div>
+                  </button>
+                </div>
+              </div>
+            )}
+
             <p className="text-[11px] text-gray-400">
-              初始密码由系统随机生成，创建成功后会展示并可一键复制。新账号默认仅授权「通用公用库」，可在成员列表中继续调整。
+              初始密码由系统随机生成，创建成功后会展示并可一键复制。新账号默认授权「通用公用库」，可在成员列表中继续调整。
             </p>
             <div className="flex justify-end gap-2 pt-2">
               <button

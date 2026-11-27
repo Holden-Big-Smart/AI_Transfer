@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import {
   useAuthStore,
+  isAnyAdmin,
   LOGO_ICON_COMPONENTS,
   getThemeLogo,
   type CustomThemeItem,
@@ -36,6 +37,7 @@ export default function Sidebar() {
   }, [currentUser, fetchThemes]);
 
   const canUseAi = Boolean(currentUser && currentUser.role !== 'guest');
+  const canManage = isAnyAdmin(currentUser);
 
   useEffect(() => {
     if (!isThemeMenuOpen) return;
@@ -174,7 +176,7 @@ export default function Sidebar() {
             <span className="text-[10px]">投屏</span>
           </NavLink>
 
-          {currentUser?.role === 'admin' && (
+          {canManage && (
             <NavLink
               to="/users"
               onClick={(e) => handleGuardedNav(e, '/users')}
@@ -185,7 +187,7 @@ export default function Sidebar() {
                     : 'text-gray-400 hover:bg-gray-800/60 hover:text-gray-200'
                 }`
               }
-              title="成员与权限管理"
+              title="成员与系统管理"
             >
               <Users size={20} className="mb-1" />
               <span className="text-[10px]">管理</span>
@@ -198,7 +200,8 @@ export default function Sidebar() {
           <button
             type="button"
             onClick={() => setIsThemeMenuOpen((prev) => !prev)}
-            style={{ backgroundColor: "var(--bg-hover)", borderColor: "var(--border-main)" }} className="w-10 h-10 rounded-xl border hover:opacity-85 flex items-center justify-center transition-colors"
+            style={{ backgroundColor: 'var(--bg-hover)', borderColor: 'var(--border-main)' }}
+            className="w-10 h-10 rounded-xl border hover:opacity-85 flex items-center justify-center transition-colors"
             title="界面主题"
           >
             {renderThemeLogo(activeTheme, 17)}

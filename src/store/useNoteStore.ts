@@ -1,57 +1,67 @@
 // src/store/useNoteStore.ts
 import { create } from 'zustand';
-import { api } from '../utils/api';
+import { api, ApiError } from '../utils/api';
+import type {
+  CodePage,
+  NoteConflictInfo,
+  NoteFolder,
+  NoteItem,
+  NoteShareItem,
+  NoteSnapshotItem,
+  NoteSubBlock
+} from '../types/note';
 
-// 旧版笔记子块结构（保留以兼容存量笔记和旧备份包无损迁移）
-export interface NoteSubBlock {
-  id: string;
-  type: 'text' | 'code' | 'image';
-  content: string;
-  language: string;
-  collapsed: boolean;
-  title: string;
-  imageUrl?: string;
-  imageWidth?: number;
-}
+export type {
+  CodePage,
+  NoteConflictInfo,
+  NoteFolder,
+  NoteItem,
+  NoteShareItem,
+  NoteSnapshotItem,
+  NoteSubBlock
+};
 
-// 统一页面结构：笔记页 ('note'，使用 richContent 富文本 HTML) 或代码页 ('code')
-export interface CodePage {
-  id: string;
-  title: string;
-  pageType: 'note' | 'code';
-  language: string;
-  code: string;
-  blocks: NoteSubBlock[];
-  richContent?: string;
-}
-
-export interface NoteFolder {
-  id: string;
-  name: string;
-  created_at: string;
-}
-
-export interface NoteShareItem {
-  userId: string;
-  username?: string;
-  name?: string;
-  permission: 'read' | 'edit';
-}
-
-export interface NoteItem {
-  id: string;
+export interface LocalNoteDraft {
+  noteId: string;
   folderId: string | null;
   title: string;
-  content: string;
   codePages: CodePage[];
-  isPublic?: boolean;
-  isOwner?: boolean;
-  canEdit?: boolean;
-  sharePermission?: 'owner' | 'edit' | 'read' | 'public';
-  shares?: NoteShareItem[];
-  authorName?: string;
-  updatedAt: string;
-  version?: string;
+  isPublic: boolean;
+  baseRevision?: number;
+  savedAt: number;
+}
+
+const DRAFT_PREFIX = 'note_local_draft_v1_';
+
+export function saveLocalNoteDraft(draft: LocalNoteDraft): void {
+  if (!draft.noteId) return;
+  try {
+    localStorage.setItem(`${DRAFT_PREFIX}${draft.noteId}`, JSON.stringify(draft));
+  } catch {
+    // 忽略容量超限异常
+  }
+}
+
+export function loadLocalNoteDraft(noteId: string): LocalNoteDraft | null {
+  if (!noteId) return null;
+  try {
+    const raw = localStorage.getItem(`${DRAFT_PREFIX}${noteId}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as LocalNoteDraft;
+    if (parsed && Array.isArray(parsed.codePages)) return parsed;
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+export function clearLocalNoteDraft(noteId: string): void {
+  if (!noteId) return;
+  try {
+    localStorage.removeItem(`${DRAFT_PREFIX}${noteId}`);
+  } catch {
+    // ignore
+  }
 }
 
 export function formatDefaultNoteTitle(): string {
@@ -83,7 +93,6 @@ function formatLegacyInline(text: string): string {
   return html;
 }
 
-// 将旧版 blocks 数组（文本/折叠代码窗/图片）无损转换为新版 TipTap 富文本 HTML
 export function blocksToRichHtml(blocks: NoteSubBlock[]): string {
   if (!Array.isArray(blocks) || blocks.length === 0) return '<p></p>';
   const parts: string[] = [];
@@ -178,6 +187,7 @@ export function normalizeNoteItem(raw: unknown): NoteItem {
     });
   }
 
+  const seenPageIds = new Set<string>();
   for (let idx = 0; idx < rawPages.length; idx++) {
     const p = rawPages[idx];
     const pType: 'note' | 'code' = p.pageType === 'note' ? 'note' : 'code';
@@ -188,7 +198,6 @@ export function normalizeNoteItem(raw: unknown): NoteItem {
           : parseLegacyTextToBlocks(asString(p.code))
         : [];
 
-    // 若已存在 richContent 字段则直接使用，否则从旧版 blocks 自动无损转换
     const richContent =
       pType === 'note'
         ? typeof p.richContent === 'string'
@@ -196,8 +205,14 @@ export function normalizeNoteItem(raw: unknown): NoteItem {
           : blocksToRichHtml(blocks)
         : undefined;
 
+    let pageId = asString(p.id).trim();
+    if (!pageId || seenPageIds.has(pageId)) {
+      pageId = `pg_${pType}_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 6)}`;
+    }
+    seenPageIds.add(pageId);
+
     normalizedPages.push({
-      id: asString(p.id, `pg_${Date.now()}_${idx}`),
+      id: pageId,
       title: asString(p.title, pType === 'note' ? `笔记_${idx + 1}` : `片段_${idx + 1}.py`),
       pageType: pType,
       language: asString(p.language, 'python'),
@@ -241,6 +256,7 @@ export function normalizeNoteItem(raw: unknown): NoteItem {
           : 'read';
   const canEdit =
     src.canEdit !== undefined ? Boolean(src.canEdit) : isOwner || sharePermission === 'edit';
+  const parsedRev = Number(src.revision);
 
   return {
     id: asString(src.id),
@@ -255,8 +271,32 @@ export function normalizeNoteItem(raw: unknown): NoteItem {
     shares: rawShares,
     authorName: asString(src.authorName),
     updatedAt: asString(src.updatedAt),
+    revision: Number.isFinite(parsedRev) && parsedRev > 0 ? parsedRev : 1,
     version: typeof src.version === 'string' ? src.version : undefined
   };
+}
+
+function sortNotesByUpdatedAt(list: NoteItem[]): NoteItem[] {
+  return [...list].sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+}
+
+function isSameNoteSnapshot(a: NoteItem, b: NoteItem): boolean {
+  if (
+    a.id !== b.id ||
+    a.revision !== b.revision ||
+    a.updatedAt !== b.updatedAt ||
+    a.title !== b.title ||
+    a.folderId !== b.folderId ||
+    a.isPublic !== b.isPublic ||
+    a.canEdit !== b.canEdit ||
+    a.sharePermission !== b.sharePermission
+  ) {
+    return false;
+  }
+  return (
+    JSON.stringify(a.shares || []) === JSON.stringify(b.shares || []) &&
+    JSON.stringify(a.codePages || []) === JSON.stringify(b.codePages || [])
+  );
 }
 
 interface NoteStore {
@@ -266,11 +306,13 @@ interface NoteStore {
   activeNoteId: string | null;
   isLoading: boolean;
   serverVersion: string;
+  conflictState: NoteConflictInfo | null;
 
   loadNotesData: (silent?: boolean) => Promise<void>;
   checkRemoteVersion: () => Promise<boolean>;
   setSelectedFolderId: (id: string | null) => void;
   setActiveNoteId: (id: string | null) => void;
+  clearConflictState: () => void;
   createFolder: (name: string) => Promise<void>;
   deleteFolder: (id: string) => Promise<void>;
   saveNote: (payload: {
@@ -280,7 +322,25 @@ interface NoteStore {
     content?: string;
     codePages: CodePage[];
     isPublic?: boolean;
+    baseRevision?: number;
+    force?: boolean;
+    keepActive?: boolean;
   }) => Promise<NoteItem | null>;
+  moveNoteToFolder: (noteId: string, folderId: string | null) => Promise<boolean>;
+  movePageToNote: (payload: {
+    sourceNoteId: string;
+    targetNoteId: string;
+    pageId: string;
+    pagePayload?: CodePage;
+    deleteEmptySource?: boolean;
+  }) => Promise<{ sourceDeleted: boolean; targetNote: NoteItem | null } | null>;
+  listSnapshots: (noteId: string) => Promise<NoteSnapshotItem[]>;
+  createSnapshot: (
+    noteId: string,
+    payload: { message?: string; title?: string; codePages?: CodePage[] }
+  ) => Promise<NoteSnapshotItem | null>;
+  restoreSnapshot: (noteId: string, snapshotId: string) => Promise<NoteItem | null>;
+  deleteSnapshot: (noteId: string, snapshotId: string) => Promise<boolean>;
   toggleNotePublic: (noteId: string, isPublic: boolean) => Promise<boolean>;
   updateNoteShares: (
     noteId: string,
@@ -314,6 +374,7 @@ export const useNoteStore = create<NoteStore>((set, get) => ({
   activeNoteId: null,
   isLoading: false,
   serverVersion: '',
+  conflictState: null,
 
   hasUnsavedChanges: false,
   unsavedGuardOpen: false,
@@ -323,6 +384,7 @@ export const useNoteStore = create<NoteStore>((set, get) => ({
   discardCurrentDraftHandler: null,
 
   setUnsavedState: (dirty) => set({ hasUnsavedChanges: dirty }),
+  clearConflictState: () => set({ conflictState: null }),
 
   registerDraftHandlers: (saveFn, discardFn) =>
     set({
@@ -337,7 +399,6 @@ export const useNoteStore = create<NoteStore>((set, get) => ({
       return;
     }
 
-    // 若用户开启了“自动保存”，切页/切笔记前直接静默保存后放行
     if (autoSaveEnabled) {
       set({ isSavingBeforeLeave: true });
       try {
@@ -352,7 +413,6 @@ export const useNoteStore = create<NoteStore>((set, get) => ({
       return;
     }
 
-    // 未开启自动保存：打开全局确认弹窗
     set({
       unsavedGuardOpen: true,
       pendingNavigationAction: action
@@ -397,17 +457,32 @@ export const useNoteStore = create<NoteStore>((set, get) => ({
     }
   },
 
+  // 静默同步时复用未变化笔记的对象引用，彻底杜绝 B 端更新不跳页/不丢光标
   loadNotesData: async (silent = false) => {
     if (!silent) set({ isLoading: true });
     try {
       const data = await api.notes.getAll();
-      const normalized = (data.notes || []).map(normalizeNoteItem);
+      const incoming = (data.notes || []).map(normalizeNoteItem);
+
       set((state) => {
-        const keepActive = normalized.some((n) => n.id === state.activeNoteId);
+        const prevMap = new Map<string, NoteItem>();
+        state.notes.forEach((n) => prevMap.set(n.id, n));
+
+        const merged = sortNotesByUpdatedAt(
+          incoming.map((nextItem) => {
+            const prevItem = prevMap.get(nextItem.id);
+            if (prevItem && isSameNoteSnapshot(prevItem, nextItem)) {
+              return prevItem;
+            }
+            return nextItem;
+          })
+        );
+
+        const keepActive = merged.some((n) => n.id === state.activeNoteId);
         return {
           folders: data.folders || [],
-          notes: normalized,
-          activeNoteId: keepActive ? state.activeNoteId : (normalized[0]?.id ?? null),
+          notes: merged,
+          activeNoteId: keepActive ? state.activeNoteId : (merged[0]?.id ?? null),
           serverVersion: data.version || state.serverVersion
         };
       });
@@ -435,7 +510,7 @@ export const useNoteStore = create<NoteStore>((set, get) => ({
   },
 
   setSelectedFolderId: (id) => set({ selectedFolderId: id }),
-  setActiveNoteId: (id) => set({ activeNoteId: id }),
+  setActiveNoteId: (id) => set({ activeNoteId: id, conflictState: null }),
 
   createFolder: async (name) => {
     const created = await api.notes.createFolder(name);
@@ -451,7 +526,16 @@ export const useNoteStore = create<NoteStore>((set, get) => ({
     }));
   },
 
-  saveNote: async ({ id, folderId, title, codePages, isPublic }) => {
+  saveNote: async ({
+    id,
+    folderId,
+    title,
+    codePages,
+    isPublic,
+    baseRevision,
+    force = false,
+    keepActive = false
+  }) => {
     const finalTitle = title.trim() || formatDefaultNoteTitle();
     try {
       const res = await api.notes.save({
@@ -460,26 +544,168 @@ export const useNoteStore = create<NoteStore>((set, get) => ({
         title: finalTitle,
         content: '',
         code_pages: codePages,
-        is_public: isPublic
+        is_public: isPublic,
+        base_revision: baseRevision,
+        force
       });
       const saved = normalizeNoteItem(res);
       const nextVersion = typeof res?.version === 'string' ? res.version : '';
+      clearLocalNoteDraft(saved.id);
 
       set((state) => {
         const exists = state.notes.some((n) => n.id === saved.id);
-        const nextNotes = exists
-          ? state.notes.map((n) => (n.id === saved.id ? saved : n))
-          : [saved, ...state.notes];
+        const nextNotes = sortNotesByUpdatedAt(
+          exists
+            ? state.notes.map((n) => (n.id === saved.id ? saved : n))
+            : [saved, ...state.notes]
+        );
         return {
           notes: nextNotes,
-          activeNoteId: saved.id,
-          serverVersion: nextVersion || state.serverVersion
+          activeNoteId: keepActive && state.activeNoteId ? state.activeNoteId : saved.id,
+          serverVersion: nextVersion || state.serverVersion,
+          conflictState: null
         };
       });
       return saved;
     } catch (err) {
+      if (err instanceof ApiError && err.status === 409 && err.payload && typeof err.payload === 'object') {
+        const p = err.payload as Record<string, unknown>;
+        if (p.code === 'NOTE_CONFLICT' && p.serverNote) {
+          const serverNote = normalizeNoteItem(p.serverNote);
+          set({
+            conflictState: {
+              noteId: id || serverNote.id,
+              message: String(p.message || err.message || '检测到跨端版本冲突'),
+              serverRevision: Number(p.serverRevision) || serverNote.revision || 1,
+              baseRevision: Number(p.baseRevision) || baseRevision || 1,
+              serverUpdatedAt: String(p.serverUpdatedAt || serverNote.updatedAt || ''),
+              serverNote
+            }
+          });
+          return null;
+        }
+      }
       console.error('保存笔记失败:', err);
       return null;
+    }
+  },
+
+  moveNoteToFolder: async (noteId, folderId) => {
+    const prevNotes = get().notes;
+    set((state) => ({
+      notes: state.notes.map((n) => (n.id === noteId ? { ...n, folderId } : n))
+    }));
+    try {
+      const res = await api.notes.moveFolder(noteId, folderId);
+      const updated = normalizeNoteItem(res.note);
+      set((state) => ({
+        notes: state.notes.map((n) => (n.id === updated.id ? updated : n)),
+        serverVersion: res.version || state.serverVersion
+      }));
+      return true;
+    } catch (err) {
+      console.error('移动笔记分类失败:', err);
+      set({ notes: prevNotes });
+      return false;
+    }
+  },
+
+  movePageToNote: async ({
+    sourceNoteId,
+    targetNoteId,
+    pageId,
+    pagePayload,
+    deleteEmptySource = false
+  }) => {
+    try {
+      const res = await api.notes.movePage({
+        source_note_id: sourceNoteId,
+        target_note_id: targetNoteId,
+        page_id: pageId,
+        page_payload: pagePayload,
+        delete_empty_source: deleteEmptySource
+      });
+      const updatedTarget = normalizeNoteItem(res.targetNote);
+      const updatedSource = res.sourceNote ? normalizeNoteItem(res.sourceNote) : null;
+
+      set((state) => {
+        let nextNotes = state.notes.filter((n) =>
+          res.sourceDeleted ? n.id !== sourceNoteId : true
+        );
+        nextNotes = nextNotes.map((n) => {
+          if (n.id === updatedTarget.id) return updatedTarget;
+          if (updatedSource && n.id === updatedSource.id) return updatedSource;
+          return n;
+        });
+        nextNotes = sortNotesByUpdatedAt(nextNotes);
+        const nextActive =
+          res.sourceDeleted && state.activeNoteId === sourceNoteId
+            ? updatedTarget.id
+            : state.activeNoteId;
+        return {
+          notes: nextNotes,
+          activeNoteId: nextActive,
+          serverVersion: res.version || state.serverVersion
+        };
+      });
+
+      return { sourceDeleted: res.sourceDeleted, targetNote: updatedTarget };
+    } catch (err) {
+      console.error('跨笔记移动页签失败:', err);
+      return null;
+    }
+  },
+
+  listSnapshots: async (noteId) => {
+    try {
+      const res = await api.notes.listSnapshots(noteId);
+      return Array.isArray(res.snapshots) ? res.snapshots : [];
+    } catch (err) {
+      console.error('获取快照列表失败:', err);
+      return [];
+    }
+  },
+
+  createSnapshot: async (noteId, { message, title, codePages }) => {
+    try {
+      const res = await api.notes.createSnapshot(noteId, {
+        message,
+        title,
+        code_pages: codePages
+      });
+      return res.snapshot;
+    } catch (err) {
+      console.error('创建快照失败:', err);
+      return null;
+    }
+  },
+
+  restoreSnapshot: async (noteId, snapshotId) => {
+    try {
+      const res = await api.notes.restoreSnapshot(noteId, snapshotId);
+      const restored = normalizeNoteItem(res.note);
+      clearLocalNoteDraft(restored.id);
+      set((state) => ({
+        notes: sortNotesByUpdatedAt(
+          state.notes.map((n) => (n.id === restored.id ? restored : n))
+        ),
+        serverVersion: res.version || state.serverVersion,
+        conflictState: null
+      }));
+      return restored;
+    } catch (err) {
+      console.error('回滚快照失败:', err);
+      return null;
+    }
+  },
+
+  deleteSnapshot: async (noteId, snapshotId) => {
+    try {
+      await api.notes.deleteSnapshot(noteId, snapshotId);
+      return true;
+    } catch (err) {
+      console.error('删除快照失败:', err);
+      return false;
     }
   },
 
@@ -525,6 +751,7 @@ export const useNoteStore = create<NoteStore>((set, get) => ({
 
   deleteNote: async (id) => {
     await api.notes.deleteNote(id);
+    clearLocalNoteDraft(id);
     set((state) => {
       const remaining = state.notes.filter((n) => n.id !== id);
       return {

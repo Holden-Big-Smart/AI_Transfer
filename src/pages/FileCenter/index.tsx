@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import { useFileStore } from '../../store/useFileStore';
 import type { FileNode, ClipboardItemNode } from '../../store/useFileStore';
-import { useAuthStore } from '../../store/useAuthStore';
+import { useAuthStore, isAnyAdmin } from '../../store/useAuthStore';
 
 interface StagedItem {
   file: File;
@@ -62,7 +62,6 @@ const formatQuotaPercent = (bytes: number, totalQuota = 50 * 1024 * 1024 * 1024)
   return `${percent.toFixed(2)}%`;
 };
 
-// 解析文件类型展示文本
 const getFileTypeLabel = (file: FileNode): string => {
   if (file.id === 'folder_public_root') return '系统目录';
   if (file.isFolder) return '文件夹';
@@ -74,8 +73,22 @@ const getFileTypeLabel = (file: FileNode): string => {
   return '文件';
 };
 
+function triggerBlobDownload(filename: string, blob: Blob) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 export default function FileCenter() {
   const { currentUser } = useAuthStore();
+  const isAdmin = isAnyAdmin(currentUser);
+  const isGuest = currentUser?.role === 'guest';
+
   const {
     files = [],
     currentPath = [],
@@ -89,8 +102,8 @@ export default function FileCenter() {
 
   const [isLogOpen, setIsLogOpen] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isBatchDownloading, setIsBatchDownloading] = useState(false);
 
-  // 真实存储空间统计状态（区分文件与笔记占用）
   const [storageStats, setStorageStats] = useState({
     filesBytes: 0,
     notesBytes: 0,
@@ -107,29 +120,22 @@ export default function FileCenter() {
     }
   };
 
-  // 登录用户变化或文件列表增删时，自动刷新存储空间统计
   useEffect(() => {
     if (!currentUser) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     loadStorageStats();
   }, [currentUser, files.length]);
 
-  // 移动端折叠“存储与上传面板”开关
   const [showMobileUploadPanel, setShowMobileUploadPanel] = useState(false);
-
-  // 支持单文件及多选批量拖拽移动
   const [draggedNodeIds, setDraggedNodeIds] = useState<string[]>([]);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
 
-  // 全空间多选勾选状态与可共享用户列表
   const [shareableUsers, setShareableUsers] = useState<Array<{ id: string; username: string; name: string; role: string }>>([]);
   const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
 
-  // 排序状态（默认按文件名升序，且文件夹始终置顶）
   const [sortField, setSortField] = useState<SortField>('name');
   const [sortOrder, setSortOrder] = useState<SortOrder>('asc');
 
-  // 列宽鼠标拖拽调整状态（持久化至 localStorage）
   const [colWidths, setColWidths] = useState<ColumnWidths>(() => {
     try {
       const saved = localStorage.getItem('fc_column_widths_v1');
@@ -148,7 +154,6 @@ export default function FileCenter() {
     }
   }, [colWidths]);
 
-  // 触发列宽鼠标拖拽
   const startResizeColumn = (colKey: keyof ColumnWidths, e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -194,27 +199,26 @@ export default function FileCenter() {
     currentPath[0]?.id === 'folder_public_root' ||
     !!currentParentNode?.isPublicFolder;
 
-  // 过滤并执行 Windows 资源管理器风格排序（系统目录第一 -> 文件夹始终在普通文件上方 -> 组内按选定字段排序）
+  // 允许登录用户在全空间勾选，也允许访客在公共空间勾选以执行批量打包下载
+  const canSelectItems = !isGuest || isInPublicSpace;
+
   const sortedDisplayFiles = useMemo(() => {
     const rawList = files.filter((file) => {
       if (file.parentId !== currentFolderId) return false;
-      if (!isInPublicSpace && currentUser?.role === 'guest') {
+      if (!isInPublicSpace && isGuest) {
         return file.id === 'folder_public_root';
       }
       return true;
     });
 
     return [...rawList].sort((a, b) => {
-      // 1. 公共共享空间入口永远固定在根目录第一行
       if (a.id === 'folder_public_root') return -1;
       if (b.id === 'folder_public_root') return 1;
 
-      // 2. Windows 资源管理器逻辑：文件夹始终排在普通文件上方
       if (a.isFolder !== b.isFolder) {
         return a.isFolder ? -1 : 1;
       }
 
-      // 3. 组内按用户选定的列排序
       let cmp = 0;
       if (sortField === 'name') {
         cmp = a.name.localeCompare(b.name, 'zh-CN', { numeric: true });
@@ -230,15 +234,13 @@ export default function FileCenter() {
 
       return sortOrder === 'asc' ? cmp : -cmp;
     });
-  }, [files, currentFolderId, isInPublicSpace, currentUser, sortField, sortOrder]);
+  }, [files, currentFolderId, isInPublicSpace, isGuest, sortField, sortOrder]);
 
-  // 当前目录下所有可勾选的节点 ID（排除系统公共空间根节点）
   const selectableIds = useMemo(
     () => sortedDisplayFiles.filter((f) => f.id !== 'folder_public_root').map((f) => f.id),
     [sortedDisplayFiles]
   );
 
-  // 点击表头切换排序字段与方向
   const handleToggleSort = (field: SortField) => {
     if (sortField === field) {
       setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'));
@@ -253,12 +255,11 @@ export default function FileCenter() {
     setSelectedFileIds([]);
     if (!currentUser) return;
 
-    if (currentUser.role !== 'guest') {
+    if (!isGuest) {
       api.files.getShareableUsers().then(setShareableUsers).catch(() => {});
     }
 
-    // 访客若因会话路径被持久化而停留在私有子目录，自动切回根目录
-    if (currentUser.role === 'guest' && !isInPublicSpace) {
+    if (isGuest && !isInPublicSpace) {
       if (currentPath.length > 0 && goToBreadcrumb) goToBreadcrumb(-1);
       return;
     }
@@ -268,14 +269,13 @@ export default function FileCenter() {
         ? currentFolderId.replace(/^(pub_|pri_)/, '')
         : '';
     loadServerFiles(isInPublicSpace, virtualSubPath);
-    if (currentUser.role === 'admin') loadAuditLogs();
+    if (isAdmin) loadAuditLogs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentFolderId, isInPublicSpace, currentUser]);
 
-  // 页内手动刷新当前所在目录（同时刷新存储空间统计）
   const handleManualRefresh = async () => {
     if (!currentUser) return;
-    if (currentUser.role === 'guest' && !isInPublicSpace) return;
+    if (isGuest && !isInPublicSpace) return;
     setIsRefreshing(true);
     const virtualSubPath =
       currentFolderId && currentFolderId !== 'folder_public_root'
@@ -284,7 +284,7 @@ export default function FileCenter() {
     try {
       await loadServerFiles(isInPublicSpace, virtualSubPath);
       await loadStorageStats();
-      if (currentUser.role === 'admin') {
+      if (isAdmin) {
         await loadAuditLogs();
       }
     } finally {
@@ -292,7 +292,40 @@ export default function FileCenter() {
     }
   };
 
-  // 将指定文件 ID 列表写入剪贴板（支持复制或剪切）
+  // 批量打包 ZIP 下载（支持多文件与文件夹混合勾选）
+  const handleBatchDownload = async (targetIds: string[]) => {
+    const targets = files.filter(
+      (f) => targetIds.includes(f.id) && f.id !== 'folder_public_root'
+    );
+    if (targets.length === 0) return;
+
+    // 若仅选中了单个普通文件，直接走原生单文件流下载更快捷
+    if (targets.length === 1 && !targets[0].isFolder) {
+      const singlePath = targets[0].virtualPath || targets[0].name;
+      window.open(api.files.getDownloadUrl(singlePath, isInPublicSpace), '_blank');
+      return;
+    }
+
+    const currentPathNames = currentPath
+      .filter((p) => p.id !== 'folder_public_root')
+      .map((p) => p.name);
+    const baseVirtualPath = currentPathNames.join('/');
+
+    const virtualPaths = targets.map(
+      (f) => f.virtualPath || (baseVirtualPath ? `${baseVirtualPath}/${f.name}` : f.name)
+    );
+
+    setIsBatchDownloading(true);
+    try {
+      const { blob, filename } = await api.files.batchDownload(virtualPaths, isInPublicSpace);
+      triggerBlobDownload(filename, blob);
+    } catch (err) {
+      alert(`批量打包下载失败: ${err instanceof Error ? err.message : '未知错误'}`);
+    } finally {
+      setIsBatchDownloading(false);
+    }
+  };
+
   const handlePutToClipboard = (ids: string[], action: 'copy' | 'cut') => {
     const currentPathNames = currentPath
       .filter((p) => p.id !== 'folder_public_root')
@@ -450,7 +483,7 @@ export default function FileCenter() {
         }
         updateTaskProgress(taskId, 100, 'success');
         loadServerFiles(isInPublicSpace, virtualParent);
-        if (isInPublicSpace && currentUser.role === 'admin') loadAuditLogs();
+        if (isInPublicSpace && isAdmin) loadAuditLogs();
       } catch (err) {
         console.error('上传失败', err);
         updateTaskProgress(taskId, 0, 'error');
@@ -473,7 +506,6 @@ export default function FileCenter() {
     }
   };
 
-  // 渲染排序图标
   const renderSortIcon = (field: SortField) => {
     if (sortField !== field) return <ArrowUpDown size={12} className="text-gray-600" />;
     return sortOrder === 'asc' ? (
@@ -484,7 +516,7 @@ export default function FileCenter() {
   };
 
   const gridTemplateStyle = {
-    gridTemplateColumns: `${colWidths.name}px ${colWidths.type}px ${colWidths.size}px ${colWidths.uploadTime}px minmax(145px, 1fr)`
+    gridTemplateColumns: `${colWidths.name}px ${colWidths.type}px ${colWidths.size}px ${colWidths.uploadTime}px minmax(155px, 1fr)`
   };
 
   const freeBytes = Math.max(0, storageStats.totalQuotaBytes - storageStats.usedBytes);
@@ -520,7 +552,6 @@ export default function FileCenter() {
         {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
       />
 
-      {/* 顶部标题与移动端折叠面板开关 */}
       <header className="flex justify-between items-center mb-3 md:mb-5 shrink-0">
         <h1 className="text-lg md:text-2xl font-bold text-blue-400">文件管理中心</h1>
         <button
@@ -534,13 +565,14 @@ export default function FileCenter() {
       </header>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-6 flex-1 overflow-hidden">
-        {/* 左侧控制区（移动端默认收起，点击可展开；桌面端常驻显示） */}
+        {/* 左侧控制区 */}
         <div
-          className={`${
-            showMobileUploadPanel ? 'flex max-h-96 lg:max-h-none' : 'hidden lg:flex'
-          } flex-col gap-4 md:gap-5 overflow-y-auto pr-1 shrink-0`}
+          className={`
+            ${
+              showMobileUploadPanel ? 'flex max-h-96 lg:max-h-none' : 'hidden lg:flex'
+            } flex-col gap-4 md:gap-5 overflow-y-auto pr-1 shrink-0`}
         >
-          {/* 存储空间仪表盘（区分文件蓝 / 笔记绿 / 剩余空间） */}
+          {/* 存储空间仪表盘 */}
           <div className="bg-[#2a2d35] p-4 md:p-5 rounded-lg shadow-lg shrink-0">
             <h2
               style={{ color: 'var(--text-primary)', borderColor: 'var(--border-main)' }}
@@ -598,7 +630,6 @@ export default function FileCenter() {
               </div>
             </div>
 
-            {/* 文件与笔记占用分项图例 */}
             <div
               style={{ borderColor: 'var(--border-subtle)' }}
               className="grid grid-cols-2 gap-2 mt-3 pt-2.5 border-t text-[11px]"
@@ -630,7 +661,7 @@ export default function FileCenter() {
             </div>
           </div>
 
-          {/* 上传面板与暂存预检区 */}
+          {/* 上传面板 */}
           <div className="bg-[#2a2d35] p-4 md:p-5 rounded-lg shadow-lg shrink-0">
             <h2 className="text-sm md:text-base font-semibold mb-3 border-b border-gray-600 pb-2">
               上传文件 / 文件夹
@@ -712,10 +743,10 @@ export default function FileCenter() {
 
                 <button
                   onClick={handleStartUpload}
-                  disabled={currentUser?.role === 'guest'}
+                  disabled={isGuest}
                   className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white font-medium py-2 rounded text-xs transition-colors shadow-md"
                 >
-                  {currentUser?.role !== 'guest'
+                  {!isGuest
                     ? `确认开始传送 (${stagedSummaryGroups.length} 项)`
                     : '只读访客无上传权限'}
                 </button>
@@ -767,9 +798,8 @@ export default function FileCenter() {
 
         {/* 右侧文件列表主区 */}
         <div className="lg:col-span-2 bg-[#2a2d35] p-3 md:p-5 rounded-lg shadow-lg flex flex-col overflow-hidden">
-          {/* 顶部面包屑与批量操作工具栏 */}
           <div className="flex flex-wrap justify-between items-center gap-2 mb-3 border-b border-gray-600 pb-2.5">
-            {/* 面包屑路径导航（支持将单文件或批量选中文件拖拽至任意层级或根目录） */}
+            {/* 面包屑路径导航 */}
             <div className="flex items-center flex-wrap text-xs md:text-sm font-semibold text-gray-300">
               <button
                 onClick={() => goToBreadcrumb && goToBreadcrumb(-1)}
@@ -834,61 +864,75 @@ export default function FileCenter() {
 
             {/* 右侧功能与批量操作按钮组 */}
             <div className="flex items-center flex-wrap gap-1.5">
-              {/* 批量选中操作栏（全空间支持批量复制 / 批量剪切 / 批量删除 / 公共空间批量共享） */}
-              {selectedFileIds.length > 0 && currentUser?.role !== 'guest' && (
-                <div className="flex items-center gap-1.5 bg-[#1e2128] border border-blue-500/40 px-2 py-1 rounded-lg">
+              {/* 批量选中操作栏：新增批量打包下载（支持文件与多级文件夹混合勾选） */}
+              {selectedFileIds.length > 0 && canSelectItems && (
+                <div className="flex items-center flex-wrap gap-1.5 bg-[#1e2128] border border-blue-500/40 px-2 py-1 rounded-lg">
                   <span className="text-[11px] text-blue-400 font-medium px-1">
                     已选 {selectedFileIds.length} 项
                   </span>
                   <button
-                    onClick={() => handlePutToClipboard(selectedFileIds, 'copy')}
-                    className="text-gray-200 hover:text-blue-400 flex items-center gap-1 text-xs bg-[#2a2d35] px-2 py-1 rounded transition-colors"
-                    title="批量复制选中项"
+                    type="button"
+                    disabled={isBatchDownloading}
+                    onClick={() => void handleBatchDownload(selectedFileIds)}
+                    className="text-emerald-300 hover:text-white flex items-center gap-1 text-xs bg-emerald-600/25 border border-emerald-500/40 px-2 py-1 rounded transition-colors disabled:opacity-50"
+                    title="将选中的文件与文件夹打包为一个 .zip 文件下载"
                   >
-                    <Copy size={12} />
-                    <span>复制</span>
+                    <Download size={12} />
+                    <span>{isBatchDownloading ? '打包中...' : '批量下载'}</span>
                   </button>
-                  <button
-                    onClick={() => handlePutToClipboard(selectedFileIds, 'cut')}
-                    className="text-gray-200 hover:text-yellow-400 flex items-center gap-1 text-xs bg-[#2a2d35] px-2 py-1 rounded transition-colors"
-                    title="批量剪切选中项"
-                  >
-                    <Scissors size={12} />
-                    <span>剪切</span>
-                  </button>
-                  {isInPublicSpace && (
-                    <button
-                      onClick={() =>
-                        setShareModal({
-                          isOpen: true,
-                          targetIds: selectedFileIds,
-                          titleText: `已选中的 ${selectedFileIds.length} 个项目`,
-                          sharedWith: []
-                        })
-                      }
-                      className="text-blue-300 hover:text-white flex items-center gap-1 text-xs bg-blue-600/30 border border-blue-500/40 px-2 py-1 rounded transition-colors"
-                    >
-                      <Share2 size={12} />
-                      <span>共享</span>
-                    </button>
+                  {!isGuest && (
+                    <>
+                      <button
+                        onClick={() => handlePutToClipboard(selectedFileIds, 'copy')}
+                        className="text-gray-200 hover:text-blue-400 flex items-center gap-1 text-xs bg-[#2a2d35] px-2 py-1 rounded transition-colors"
+                        title="批量复制选中项"
+                      >
+                        <Copy size={12} />
+                        <span>复制</span>
+                      </button>
+                      <button
+                        onClick={() => handlePutToClipboard(selectedFileIds, 'cut')}
+                        className="text-gray-200 hover:text-yellow-400 flex items-center gap-1 text-xs bg-[#2a2d35] px-2 py-1 rounded transition-colors"
+                        title="批量剪切选中项"
+                      >
+                        <Scissors size={12} />
+                        <span>剪切</span>
+                      </button>
+                      {isInPublicSpace && (
+                        <button
+                          onClick={() =>
+                            setShareModal({
+                              isOpen: true,
+                              targetIds: selectedFileIds,
+                              titleText: `已选中的 ${selectedFileIds.length} 个项目`,
+                              sharedWith: []
+                            })
+                          }
+                          className="text-blue-300 hover:text-white flex items-center gap-1 text-xs bg-blue-600/30 border border-blue-500/40 px-2 py-1 rounded transition-colors"
+                        >
+                          <Share2 size={12} />
+                          <span>共享</span>
+                        </button>
+                      )}
+                      <button
+                        onClick={async () => {
+                          if (confirm(`确认将选中的 ${selectedFileIds.length} 个项目移入回收站吗？`)) {
+                            await batchDeleteFiles(selectedFileIds);
+                            setSelectedFileIds([]);
+                          }
+                        }}
+                        className="text-red-400 hover:text-red-300 flex items-center gap-1 text-xs bg-red-950/30 border border-red-800/40 px-2 py-1 rounded transition-colors"
+                      >
+                        <Trash2 size={12} />
+                        <span>删除</span>
+                      </button>
+                    </>
                   )}
-                  <button
-                    onClick={async () => {
-                      if (confirm(`确认将选中的 ${selectedFileIds.length} 个项目移入回收站吗？`)) {
-                        await batchDeleteFiles(selectedFileIds);
-                        setSelectedFileIds([]);
-                      }
-                    }}
-                    className="text-red-400 hover:text-red-300 flex items-center gap-1 text-xs bg-red-950/30 border border-red-800/40 px-2 py-1 rounded transition-colors"
-                  >
-                    <Trash2 size={12} />
-                    <span>删除</span>
-                  </button>
                 </div>
               )}
 
-              {/* 剪贴板粘贴状态栏（支持复制粘贴与剪切粘贴，同目录复制自动追加 (1)） */}
-              {clipboard && clipboard.items.length > 0 && currentUser?.role !== 'guest' && (
+              {/* 剪贴板粘贴状态栏 */}
+              {clipboard && clipboard.items.length > 0 && !isGuest && (
                 <div className="flex items-center gap-1 bg-yellow-950/40 border border-yellow-600/50 px-2.5 py-1 rounded-lg">
                   <button
                     onClick={async () => {
@@ -913,8 +957,7 @@ export default function FileCenter() {
                 </div>
               )}
 
-              {/* 页内刷新按钮：重新拉取当前目录文件，不重置当前所在层级 */}
-              {!(currentUser?.role === 'guest' && !isInPublicSpace) && (
+              {!(isGuest && !isInPublicSpace) && (
                 <button
                   onClick={handleManualRefresh}
                   className="text-gray-300 hover:text-white flex items-center gap-1 text-xs bg-[#323640] hover:bg-[#3d424e] px-2.5 py-1.5 rounded transition-colors"
@@ -925,7 +968,7 @@ export default function FileCenter() {
                 </button>
               )}
 
-              {currentUser?.role === 'admin' && (
+              {isAdmin && (
                 <button
                   onClick={() => setIsLogOpen(true)}
                   className="text-gray-300 hover:text-white flex items-center gap-1 text-xs bg-[#323640] px-2.5 py-1.5 rounded transition-colors"
@@ -936,7 +979,7 @@ export default function FileCenter() {
                 </button>
               )}
 
-              {currentUser?.role !== 'guest' && (
+              {!isGuest && (
                 <button
                   onClick={() => setIsModalOpen(true)}
                   className="text-blue-400 hover:text-blue-300 flex items-center gap-1 text-xs bg-[#323640] px-3 py-1.5 rounded transition-colors"
@@ -950,14 +993,12 @@ export default function FileCenter() {
           {/* 表格横向滚动与可拖拽列宽容器 */}
           <div className="flex-1 overflow-auto">
             <div className="min-w-max">
-              {/* 表头（支持点击排序 + 右侧边缘鼠标拖拽调整列宽） */}
               <div
                 style={gridTemplateStyle}
                 className="grid items-center text-xs text-gray-400 font-semibold border-b border-gray-700 pb-2 mb-1 sticky top-0 bg-[#2a2d35] z-10"
               >
-                {/* 列 1：全选框 + 文件名 */}
                 <div className="relative flex items-center gap-2 pr-3 overflow-hidden">
-                  {currentUser?.role !== 'guest' && selectableIds.length > 0 && (
+                  {canSelectItems && selectableIds.length > 0 && (
                     <button
                       onClick={() =>
                         setSelectedFileIds(
@@ -988,7 +1029,6 @@ export default function FileCenter() {
                   />
                 </div>
 
-                {/* 列 2：类型 */}
                 <div className="relative flex items-center px-2 overflow-hidden">
                   <button
                     onClick={() => handleToggleSort('type')}
@@ -1004,7 +1044,6 @@ export default function FileCenter() {
                   />
                 </div>
 
-                {/* 列 3：大小 */}
                 <div className="relative flex items-center px-2 overflow-hidden">
                   <button
                     onClick={() => handleToggleSort('size')}
@@ -1020,7 +1059,6 @@ export default function FileCenter() {
                   />
                 </div>
 
-                {/* 列 4：上传时间 */}
                 <div className="relative flex items-center px-2 overflow-hidden">
                   <button
                     onClick={() => handleToggleSort('uploadTime')}
@@ -1036,17 +1074,14 @@ export default function FileCenter() {
                   />
                 </div>
 
-                {/* 列 5：操作 */}
                 <div className="text-right pr-2">操作</div>
               </div>
 
-              {/* 文件行列表 */}
               {sortedDisplayFiles.length === 0 ? (
                 <div className="text-center text-gray-500 py-12 text-sm">当前文件夹为空</div>
               ) : (
                 sortedDisplayFiles.map((file) => {
-                  const isItemDraggable =
-                    currentUser?.role !== 'guest' && file.id !== 'folder_public_root';
+                  const isItemDraggable = !isGuest && file.id !== 'folder_public_root';
                   const isDropTarget =
                     file.isFolder && dropTargetId === file.id && !draggedNodeIds.includes(file.id);
                   const isBeingDragged = draggedNodeIds.includes(file.id);
@@ -1060,7 +1095,6 @@ export default function FileCenter() {
                       draggable={isItemDraggable}
                       onDragStart={(e) => {
                         e.stopPropagation();
-                        // 如果拖动的是已勾选的项目之一，则自动触发批量拖动全部已勾选项
                         const batchIds = isSelected ? selectedFileIds : [file.id];
                         e.dataTransfer.setData('text/plain', JSON.stringify(batchIds));
                         e.dataTransfer.effectAllowed = 'move';
@@ -1115,9 +1149,8 @@ export default function FileCenter() {
                         isItemDraggable ? 'cursor-grab active:cursor-grabbing' : 'cursor-default'
                       }`}
                     >
-                      {/* 列 1：复选框 + 图标 + 文件名 + 权限角标 */}
                       <div className="flex items-center gap-2 text-gray-300 truncate pr-3">
-                        {currentUser?.role !== 'guest' && file.id !== 'folder_public_root' && (
+                        {canSelectItems && file.id !== 'folder_public_root' && (
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
@@ -1173,28 +1206,28 @@ export default function FileCenter() {
                         )}
                       </div>
 
-                      {/* 列 2：类型 */}
                       <div className="px-2 text-gray-400 truncate">{getFileTypeLabel(file)}</div>
-
-                      {/* 列 3：大小 */}
                       <div className="px-2 text-gray-400 truncate">{formatBytes(file.size)}</div>
-
-                      {/* 列 4：上传时间 */}
                       <div className="px-2 text-gray-500 truncate">{file.uploadTime}</div>
 
-                      {/* 列 5：操作按钮（移动端常驻可见，桌面端悬停可见） */}
                       <div className="pr-2 text-right opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity flex items-center justify-end gap-2">
-                        {!file.isFolder && (
+                        {file.id !== 'folder_public_root' && (
                           <button
+                            type="button"
+                            disabled={isBatchDownloading}
                             onClick={() => {
-                              const virtualPath = file.virtualPath || file.name;
-                              window.open(
-                                api.files.getDownloadUrl(virtualPath, isInPublicSpace),
-                                '_blank'
-                              );
+                              if (file.isFolder) {
+                                void handleBatchDownload([file.id]);
+                              } else {
+                                const virtualPath = file.virtualPath || file.name;
+                                window.open(
+                                  api.files.getDownloadUrl(virtualPath, isInPublicSpace),
+                                  '_blank'
+                                );
+                              }
                             }}
-                            className="text-blue-400 hover:text-blue-300"
-                            title="下载文件"
+                            className="text-blue-400 hover:text-blue-300 disabled:opacity-40"
+                            title={file.isFolder ? '打包下载此文件夹 (.zip)' : '下载文件'}
                           >
                             <Download size={14} />
                           </button>
@@ -1202,7 +1235,7 @@ export default function FileCenter() {
 
                         {isInPublicSpace &&
                           file.id !== 'folder_public_root' &&
-                          (file.ownerId === currentUser?.id || currentUser?.role === 'admin') && (
+                          (file.ownerId === currentUser?.id || isAdmin) && (
                             <button
                               onClick={() =>
                                 setShareModal({
@@ -1223,7 +1256,7 @@ export default function FileCenter() {
                             </button>
                           )}
 
-                        {currentUser?.role !== 'guest' && file.id !== 'folder_public_root' && (
+                        {!isGuest && file.id !== 'folder_public_root' && (
                           <>
                             <button
                               onClick={() => {

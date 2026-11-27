@@ -16,8 +16,14 @@ import {
 } from 'lucide-react';
 import { api } from '../utils/api';
 
-export type UserRole = 'admin' | 'user' | 'guest';
+export type UserRole = 'admin' | 'sub_admin' | 'user' | 'guest';
 export type ThemeMode = 'dark' | 'light' | 'eyecare' | (string & {});
+
+export const isSuperAdmin = (user: Pick<UserAccount, 'role'> | null | undefined): boolean =>
+  user?.role === 'admin';
+
+export const isAnyAdmin = (user: Pick<UserAccount, 'role'> | null | undefined): boolean =>
+  user?.role === 'admin' || user?.role === 'sub_admin';
 
 export const LOGO_ICONS = [
   'ring',
@@ -133,7 +139,13 @@ interface AuthStore {
   login: (username: string, password: string) => Promise<{ success: boolean; message?: string; mustChange?: boolean }>;
   logout: () => void;
   guestLogin: () => void;
-  createUser: (username: string, name: string, allowedProjects: string[]) => Promise<{ user: UserAccount; initialPass: string }>;
+  createUser: (
+    username: string,
+    name: string,
+    allowedProjects: string[],
+    role?: 'user' | 'sub_admin'
+  ) => Promise<{ user: UserAccount; initialPass: string }>;
+  updateUserRole: (userId: string, role: 'user' | 'sub_admin') => Promise<void>;
   deleteUser: (id: string) => Promise<void>;
   updateUserProjects: (userId: string, allowedProjects: string[]) => Promise<void>;
   setAllowedProjects: (projects: string[]) => void;
@@ -456,12 +468,24 @@ const resolveInitialAutoSave = (user: UserAccount | null): boolean => {
   return localStorage.getItem(getUserAutoSaveStorageKey(user)) === 'true';
 };
 
-const normalizeUser = (user: UserAccount): UserAccount => ({
-  ...user,
-  allowedProjects: Array.isArray(user.allowedProjects) ? user.allowedProjects : ['通用公用库'],
-  theme: sanitizeTheme(user.theme),
-  noteAutoSave: Boolean(user.noteAutoSave)
-});
+const normalizeUser = (raw: UserAccount & Record<string, unknown>): UserAccount => {
+  const projects = Array.isArray(raw.allowedProjects)
+    ? raw.allowedProjects
+    : Array.isArray(raw.allowed_projects)
+      ? (raw.allowed_projects as string[])
+      : ['通用公用库'];
+  const roleVal = String(raw.role || 'user').toLowerCase();
+  const safeRole: UserRole =
+    roleVal === 'admin' || roleVal === 'sub_admin' || roleVal === 'guest' ? roleVal : 'user';
+  return {
+    ...raw,
+    role: safeRole,
+    allowedProjects: projects,
+    theme: sanitizeTheme(raw.theme),
+    noteAutoSave: Boolean(raw.noteAutoSave ?? raw.note_auto_save),
+    avatarUrl: (raw.avatarUrl ?? raw.avatar_url ?? null) as string | null
+  };
+};
 
 const initialUser = getStoredCurrentUser();
 const initialTheme = resolveInitialTheme(initialUser);
@@ -477,7 +501,11 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
 
   fetchUsers: async () => {
     const list = await api.auth.getUsers();
-    set({ users: (list || []).map((user) => normalizeUser(user as unknown as UserAccount)) });
+    set({
+      users: (list || []).map((user) =>
+        normalizeUser(user as unknown as UserAccount & Record<string, unknown>)
+      )
+    });
   },
 
   syncCurrentUser: async () => {
@@ -485,7 +513,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     if (!state.currentUser || state.currentUser.role === 'guest') return;
     try {
       const me = await api.auth.getMe();
-      const normalized = normalizeUser(me as unknown as UserAccount);
+      const normalized = normalizeUser(me as unknown as UserAccount & Record<string, unknown>);
       localStorage.setItem('app_current_user', JSON.stringify(normalized));
       const nextTheme = sanitizeTheme(normalized.theme || state.theme);
       applyThemeToDom(nextTheme, get().themes);
@@ -643,7 +671,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     try {
       const res = await api.auth.login(username, password);
       localStorage.setItem('access_token', res.access_token);
-      const normalized = normalizeUser(res.user as unknown as UserAccount);
+      const normalized = normalizeUser(res.user as unknown as UserAccount & Record<string, unknown>);
       localStorage.setItem('app_current_user', JSON.stringify(normalized));
       const nextTheme = sanitizeTheme(normalized.theme || 'dark');
       applyThemeToDom(nextTheme, get().themes);
@@ -682,12 +710,26 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     set({ currentUser: guestUser, theme: 'dark', noteAutoSave: false });
   },
 
-  createUser: async (username: string, name: string, allowedProjects: string[]) => {
-    const created = (await api.auth.createUser(username, name, allowedProjects)) as Record<string, unknown>;
-    const normalized = normalizeUser((created.user || created) as UserAccount);
+  createUser: async (
+    username: string,
+    name: string,
+    allowedProjects: string[],
+    role: 'user' | 'sub_admin' = 'user'
+  ) => {
+    const created = (await api.auth.createUser(username, name, allowedProjects, role)) as Record<string, unknown>;
+    const normalized = normalizeUser(
+      (created.user || created) as UserAccount & Record<string, unknown>
+    );
     const initialPass = String(created.initialPass || created.initial_pass || created.initialPassword || '');
     set((state) => ({ users: [...state.users, normalized] }));
     return { user: normalized, initialPass };
+  },
+
+  updateUserRole: async (userId: string, role: 'user' | 'sub_admin') => {
+    const res = await api.auth.updateUserRole(userId, role);
+    set((state) => ({
+      users: state.users.map((u) => (u.id === userId ? { ...u, role: res.role } : u))
+    }));
   },
 
   deleteUser: async (id: string) => {
