@@ -308,6 +308,24 @@ export const api = {
         body: JSON.stringify({ note_id, is_public })
       }).then(handleResponse<{ message: string; isPublic: boolean; version?: string }>),
 
+    updateShares: (data: {
+      note_id: string;
+      is_public?: boolean;
+      shares: Array<{ user_id: string; permission: 'read' | 'edit' }>;
+    }) =>
+      fetch(`${API_BASE_URL}/api/notes/shares`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(data)
+      }).then(
+        handleResponse<{
+          message: string;
+          isPublic: boolean;
+          shares: Array<{ userId: string; username: string; name: string; permission: 'read' | 'edit' }>;
+          version?: string;
+        }>
+      ),
+
     // 上传笔记内嵌图片（粘贴截图或本地图片）
     uploadImage: async (file: File | Blob, filename = 'paste.png') => {
       const token = localStorage.getItem('access_token');

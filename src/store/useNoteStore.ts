@@ -31,6 +31,13 @@ export interface NoteFolder {
   created_at: string;
 }
 
+export interface NoteShareItem {
+  userId: string;
+  username?: string;
+  name?: string;
+  permission: 'read' | 'edit';
+}
+
 export interface NoteItem {
   id: string;
   folderId: string | null;
@@ -39,6 +46,9 @@ export interface NoteItem {
   codePages: CodePage[];
   isPublic?: boolean;
   isOwner?: boolean;
+  canEdit?: boolean;
+  sharePermission?: 'owner' | 'edit' | 'read' | 'public';
+  shares?: NoteShareItem[];
   authorName?: string;
   updatedAt: string;
   version?: string;
@@ -209,6 +219,29 @@ export function normalizeNoteItem(raw: unknown): NoteItem {
     });
   }
 
+  const isOwner = src.isOwner !== undefined ? Boolean(src.isOwner) : true;
+  const rawShares = Array.isArray(src.shares)
+    ? (src.shares as Array<Record<string, unknown>>)
+        .map((s): NoteShareItem => ({
+          userId: asString(s.userId || s.user_id),
+          username: asString(s.username),
+          name: asString(s.name),
+          permission: s.permission === 'edit' ? 'edit' : 'read'
+        }))
+        .filter((s) => Boolean(s.userId))
+    : [];
+  const rawPerm = asString(src.sharePermission);
+  const sharePermission: 'owner' | 'edit' | 'read' | 'public' =
+    rawPerm === 'owner' || rawPerm === 'edit' || rawPerm === 'read' || rawPerm === 'public'
+      ? rawPerm
+      : isOwner
+        ? 'owner'
+        : Boolean(src.isPublic)
+          ? 'public'
+          : 'read';
+  const canEdit =
+    src.canEdit !== undefined ? Boolean(src.canEdit) : isOwner || sharePermission === 'edit';
+
   return {
     id: asString(src.id),
     folderId: typeof src.folderId === 'string' ? src.folderId : null,
@@ -216,7 +249,10 @@ export function normalizeNoteItem(raw: unknown): NoteItem {
     content: '',
     codePages: normalizedPages,
     isPublic: Boolean(src.isPublic),
-    isOwner: src.isOwner !== undefined ? Boolean(src.isOwner) : true,
+    isOwner,
+    canEdit,
+    sharePermission,
+    shares: rawShares,
     authorName: asString(src.authorName),
     updatedAt: asString(src.updatedAt),
     version: typeof src.version === 'string' ? src.version : undefined
@@ -246,6 +282,10 @@ interface NoteStore {
     isPublic?: boolean;
   }) => Promise<NoteItem | null>;
   toggleNotePublic: (noteId: string, isPublic: boolean) => Promise<boolean>;
+  updateNoteShares: (
+    noteId: string,
+    payload: { isPublic: boolean; shares: Array<{ userId: string; permission: 'read' | 'edit' }> }
+  ) => Promise<boolean>;
   deleteNote: (id: string) => Promise<void>;
   importNotesBackup: (backupData: { folders?: Array<{ name: string }>; notes?: unknown[] }) => Promise<number>;
   saveNoteFromAI: (title: string, textContent: string, codeSnippets?: string[]) => Promise<NoteItem | null>;
@@ -453,6 +493,32 @@ export const useNoteStore = create<NoteStore>((set, get) => ({
       return true;
     } catch (err) {
       console.error('切换笔记公开状态失败:', err);
+      return false;
+    }
+  },
+
+  updateNoteShares: async (noteId, payload) => {
+    try {
+      const res = await api.notes.updateShares({
+        note_id: noteId,
+        is_public: payload.isPublic,
+        shares: payload.shares.map((s) => ({ user_id: s.userId, permission: s.permission }))
+      });
+      set((state) => ({
+        notes: state.notes.map((n) =>
+          n.id === noteId
+            ? {
+                ...n,
+                isPublic: res.isPublic,
+                shares: Array.isArray(res.shares) ? res.shares : []
+              }
+            : n
+        ),
+        serverVersion: res.version || state.serverVersion
+      }));
+      return true;
+    } catch (err) {
+      console.error('更新笔记共享权限失败:', err);
       return false;
     }
   },

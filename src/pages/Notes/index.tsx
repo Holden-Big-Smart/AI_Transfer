@@ -3,7 +3,11 @@ import { useState, useEffect, useRef } from 'react';
 import {
   FolderPlus, Plus, Trash2, Save, Copy, Check, Code2, FileText,
   ChevronLeft, ChevronRight, Folder, Sparkles, RefreshCw, GripVertical,
-  PanelLeftClose, PanelLeftOpen, WrapText, Globe, Lock, Download, Upload, X
+  PanelLeftClose, PanelLeftOpen, WrapText, Globe, Lock, Download, Upload, X,
+  Users,
+  Eye,
+  Pencil,
+  Search
 } from 'lucide-react';
 import {
   useNoteStore,
@@ -355,7 +359,7 @@ export default function Notes() {
   const {
     folders, notes, selectedFolderId, activeNoteId,
     loadNotesData, checkRemoteVersion, setSelectedFolderId, setActiveNoteId,
-    createFolder, deleteFolder, saveNote, toggleNotePublic, deleteNote,
+    createFolder, deleteFolder, saveNote, updateNoteShares, deleteNote,
     importNotesBackup, setUnsavedState, registerDraftHandlers, requestProtectedAction
   } = useNoteStore();
 
@@ -364,6 +368,14 @@ export default function Notes() {
   const [title, setTitle] = useState('');
   const [codePages, setCodePages] = useState<CodePage[]>([]);
   const [isPublic, setIsPublic] = useState(false);
+  const [shareModalOpen, setShareModalOpen] = useState(false);
+  const [shareableUsers, setShareableUsers] = useState<
+    Array<{ id: string; username: string; name: string; role: string }>
+  >([]);
+  const [shareSearch, setShareSearch] = useState('');
+  const [draftPublic, setDraftPublic] = useState(false);
+  const [draftUserPerms, setDraftUserPerms] = useState<Record<string, 'none' | 'read' | 'edit'>>({});
+  const [savingShares, setSavingShares] = useState(false);
   const [activeTabIdx, setActiveTabIdx] = useState(0);
 
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(() => {
@@ -430,7 +442,9 @@ export default function Notes() {
     : notes;
 
   const activeNote = notes.find((n) => n.id === activeNoteId) || null;
-  const canEditActiveNote = !isGuest && (activeNote ? activeNote.isOwner !== false : true);
+  const canManageShare = !isGuest && Boolean(activeNote && activeNote.isOwner !== false);
+  const canEditActiveNote =
+    !isGuest && (activeNote ? Boolean(activeNote.canEdit ?? activeNote.isOwner !== false) : true);
 
   // 同步本地 isDirty 状态至全局 store（供侧边栏跨模块跳转拦截）
   useEffect(() => {
@@ -790,20 +804,56 @@ export default function Notes() {
     markDirty();
   };
 
-  const handleTogglePublicStatus = async () => {
-    if (!canEditActiveNote) return;
-    const nextState = !isPublic;
-    setIsPublic(nextState);
-    if (activeNoteId) {
+  const handleOpenShareModal = async () => {
+    if (!canManageShare || !activeNote) return;
+    setDraftPublic(Boolean(activeNote.isPublic));
+    const permMap: Record<string, 'none' | 'read' | 'edit'> = {};
+    for (const s of activeNote.shares || []) {
+      permMap[s.userId] = s.permission === 'edit' ? 'edit' : 'read';
+    }
+    setDraftUserPerms(permMap);
+    setShareSearch('');
+    setShareModalOpen(true);
+    try {
+      const list = await api.files.getShareableUsers();
+      setShareableUsers(Array.isArray(list) ? list : []);
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleSaveShareSettings = async () => {
+    if (!activeNote || !canManageShare) return;
+    setSavingShares(true);
+    try {
+      const sharesPayload = Object.entries(draftUserPerms)
+        .filter(([, perm]) => perm === 'read' || perm === 'edit')
+        .map(([userId, perm]) => ({ userId, permission: perm as 'read' | 'edit' }));
       skipNextActiveNoteHydrateRef.current = true;
-      const ok = await toggleNotePublic(activeNoteId, nextState);
+      const ok = await updateNoteShares(activeNote.id, {
+        isPublic: draftPublic,
+        shares: sharesPayload
+      });
       if (ok) {
-        showToast(nextState ? '🌐 已设为公开 (访客可见)' : '🔒 已设为仅自己可见', 2000);
+        setIsPublic(draftPublic);
+        setShareModalOpen(false);
+        const editCnt = sharesPayload.filter((s) => s.permission === 'edit').length;
+        const readCnt = sharesPayload.filter((s) => s.permission === 'read').length;
+        if (draftPublic && sharesPayload.length > 0) {
+          showToast(`🌐 已公开并定向共享给 ${sharesPayload.length} 人`, 2200);
+        } else if (draftPublic) {
+          showToast('🌐 已设为公开 (访客只读可见)', 2000);
+        } else if (sharesPayload.length > 0) {
+          showToast(`👥 已共享：${editCnt} 人可编辑，${readCnt} 人仅查看`, 2200);
+        } else {
+          showToast('🔒 已设为仅自己可见', 2000);
+        }
       } else {
         skipNextActiveNoteHydrateRef.current = false;
+        showToast('保存共享设置失败，请重试', 2200);
       }
-    } else {
-      markDirty();
+    } finally {
+      setSavingShares(false);
     }
   };
 
@@ -1192,6 +1242,27 @@ export default function Notes() {
                           <Globe size={9} /> 公开
                         </span>
                       )}
+                      {item.isOwner !== false && (item.shares?.length || 0) > 0 && (
+                        <span
+                          className="text-[10px] bg-blue-950/60 text-blue-300 border border-blue-700/50 px-1.5 py-0.2 rounded shrink-0 flex items-center gap-0.5"
+                          title={`已定向共享给 ${item.shares?.length || 0} 位成员`}
+                        >
+                          <Users size={9} /> 共享 {item.shares?.length}
+                        </span>
+                      )}
+                      {item.isOwner === false && (
+                        <span
+                          className={`text-[10px] px-1.5 py-0.2 rounded shrink-0 flex items-center gap-0.5 border ${
+                            item.canEdit
+                              ? 'bg-indigo-950/60 text-indigo-300 border-indigo-600/50'
+                              : 'bg-gray-800 text-gray-300 border-gray-600/60'
+                          }`}
+                          title={`来自 ${item.authorName || '成员'} 的共享笔记`}
+                        >
+                          {item.canEdit ? <Pencil size={9} /> : <Eye size={9} />}
+                          {item.canEdit ? '可编辑' : '仅查看'}
+                        </span>
+                      )}
                     </div>
                     {!isGuest && item.isOwner !== false && (
                       <button
@@ -1257,19 +1328,56 @@ export default function Notes() {
               </span>
             )}
 
-            {canEditActiveNote && activeNote && (
-              <button
-                onClick={handleTogglePublicStatus}
-                className={`flex items-center gap-1.5 text-xs px-2.5 py-2 rounded-xl border transition-colors ${
-                  isPublic
-                    ? 'bg-green-950/40 border-green-600/60 text-green-300 hover:bg-green-900/50'
-                    : 'bg-[#1a1c23] border-gray-700 text-gray-400 hover:text-gray-200'
+            {canManageShare && activeNote && (() => {
+              const shareCount = activeNote.shares?.length || 0;
+              const label =
+                isPublic && shareCount > 0
+                  ? `公开 · 已共享(${shareCount})`
+                  : isPublic
+                    ? '公开 (访客可见)'
+                    : shareCount > 0
+                      ? `已共享 (${shareCount}人)`
+                      : '仅自己可见';
+              const toneClass = isPublic
+                ? 'bg-green-950/40 border-green-600/60 text-green-300 hover:bg-green-900/50'
+                : shareCount > 0
+                  ? 'bg-blue-950/40 border-blue-600/60 text-blue-300 hover:bg-blue-900/50'
+                  : 'bg-[#1a1c23] border-gray-700 text-gray-400 hover:text-gray-200';
+              return (
+                <button
+                  type="button"
+                  onClick={() => void handleOpenShareModal()}
+                  className={`flex items-center gap-1.5 text-xs px-2.5 py-2 rounded-xl border transition-colors ${toneClass}`}
+                  title="配置笔记公开状态与指定用户可见 / 可编辑权限"
+                >
+                  {isPublic ? (
+                    <Globe size={14} className="text-green-400" />
+                  ) : shareCount > 0 ? (
+                    <Users size={14} className="text-blue-400" />
+                  ) : (
+                    <Lock size={14} />
+                  )}
+                  <span className="hidden lg:inline">{label}</span>
+                </button>
+              );
+            })()}
+
+            {!isGuest && activeNote && activeNote.isOwner === false && (
+              <span
+                className={`flex items-center gap-1.5 text-xs px-2.5 py-2 rounded-xl border ${
+                  activeNote.canEdit
+                    ? 'bg-indigo-950/40 border-indigo-500/50 text-indigo-300'
+                    : 'bg-[#1a1c23] border-gray-700 text-gray-400'
                 }`}
-                title="开启公开后，未登录的访客也可查看并复制此笔记"
+                title={`原作者：${activeNote.authorName || '管理员'}`}
               >
-                {isPublic ? <Globe size={14} className="text-green-400" /> : <Lock size={14} />}
-                <span className="hidden lg:inline">{isPublic ? '公开 (访客可见)' : '仅自己可见'}</span>
-              </button>
+                {activeNote.canEdit ? <Pencil size={13} /> : <Eye size={13} />}
+                <span className="hidden lg:inline">
+                  {activeNote.canEdit
+                    ? `协作可编辑 · ${activeNote.authorName || '成员'}`
+                    : `只读共享 · ${activeNote.authorName || '成员'}`}
+                </span>
+              </span>
             )}
 
             {/* 自动保存开关（跟随账号持久化，开启后输入停顿、切页、关闭网页自动保存） */}
@@ -1588,6 +1696,172 @@ export default function Notes() {
           )}
         </div>
       </div>
+
+      {/* 笔记共享与用户权限设置弹窗 */}
+      {shareModalOpen && activeNote && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="bg-[#252830] border border-gray-700 rounded-2xl w-full max-w-lg p-5 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-gray-800 pb-3">
+              <div className="min-w-0">
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <Users size={16} className="text-blue-400 shrink-0" />
+                  <span>笔记共享与权限设置</span>
+                </h3>
+                <p className="text-[11px] text-gray-400 truncate mt-0.5">
+                  当前笔记：{activeNote.title}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShareModalOpen(false)}
+                className="text-gray-400 hover:text-white p-1"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* 公开开关 */}
+            <div className="flex items-center justify-between gap-3 p-3 rounded-xl bg-[#1a1d24] border border-gray-700/80">
+              <div className="min-w-0">
+                <div className="text-xs font-semibold text-gray-100 flex items-center gap-1.5">
+                  <Globe size={14} className={draftPublic ? 'text-green-400' : 'text-gray-500'} />
+                  <span>公开访问（访客及所有账号只读可见）</span>
+                </div>
+                <div className="text-[11px] text-gray-400 mt-0.5">
+                  开启后任何人均可查看并复制本笔记；编辑权限需在下方单独授权。
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDraftPublic((prev) => !prev)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium border shrink-0 transition-colors ${
+                  draftPublic
+                    ? 'bg-green-600/20 border-green-500/60 text-green-300'
+                    : 'bg-[#252830] border-gray-600 text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                {draftPublic ? '已开启' : '未开启'}
+              </button>
+            </div>
+
+            {/* 指定成员授权列表 */}
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-gray-200">指定成员权限</span>
+                {Object.values(draftUserPerms).some((p) => p === 'read' || p === 'edit') && (
+                  <button
+                    type="button"
+                    onClick={() => setDraftUserPerms({})}
+                    className="text-[11px] text-rose-400 hover:text-rose-300"
+                  >
+                    清空定向共享
+                  </button>
+                )}
+              </div>
+
+              <div className="relative">
+                <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+                <input
+                  type="text"
+                  value={shareSearch}
+                  onChange={(e) => setShareSearch(e.target.value)}
+                  placeholder="搜索成员姓名或登录账号..."
+                  className="w-full bg-[#1a1d24] border border-gray-700 rounded-xl pl-8 pr-3 py-2 text-xs text-gray-100 focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div className="max-h-64 overflow-y-auto space-y-1.5 pr-0.5">
+                {(() => {
+                  const kw = shareSearch.trim().toLowerCase();
+                  const candidates = shareableUsers.filter((u) => {
+                    if (String(u.id) === String(currentUser?.id)) return false;
+                    if (!kw) return true;
+                    return (
+                      (u.name || '').toLowerCase().includes(kw) ||
+                      (u.username || '').toLowerCase().includes(kw)
+                    );
+                  });
+
+                  if (candidates.length === 0) {
+                    return (
+                      <div className="text-center text-xs text-gray-500 py-6">
+                        暂无可配置的其他成员账号
+                      </div>
+                    );
+                  }
+
+                  return candidates.map((u) => {
+                    const currentPerm = draftUserPerms[u.id] || 'none';
+                    return (
+                      <div
+                        key={u.id}
+                        className="flex items-center justify-between gap-3 px-3 py-2 rounded-xl bg-[#1a1d24] border border-gray-800"
+                      >
+                        <div className="min-w-0">
+                          <div className="text-xs font-medium text-gray-100 truncate">
+                            {u.name || u.username}
+                          </div>
+                          <div className="text-[10px] text-gray-400 truncate">@{u.username}</div>
+                        </div>
+
+                        <div className="inline-flex items-center rounded-lg bg-[#14161b] border border-gray-700 p-0.5 shrink-0 text-[11px]">
+                          {(
+                            [
+                              { value: 'none', label: '无权限' },
+                              { value: 'read', label: '仅查看' },
+                              { value: 'edit', label: '可编辑' }
+                            ] as const
+                          ).map((opt) => {
+                            const selected = currentPerm === opt.value;
+                            const activeCls =
+                              opt.value === 'edit'
+                                ? 'bg-indigo-600 text-white'
+                                : opt.value === 'read'
+                                  ? 'bg-blue-600 text-white'
+                                  : 'bg-gray-700 text-gray-100';
+                            return (
+                              <button
+                                key={opt.value}
+                                type="button"
+                                onClick={() =>
+                                  setDraftUserPerms((prev) => ({ ...prev, [u.id]: opt.value }))
+                                }
+                                className={`px-2.5 py-1 rounded-md transition-colors ${
+                                  selected ? activeCls : 'text-gray-400 hover:text-gray-200'
+                                }`}
+                              >
+                                {opt.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-gray-800">
+              <button
+                type="button"
+                onClick={() => setShareModalOpen(false)}
+                className="px-3.5 py-1.5 rounded-lg text-xs text-gray-400 hover:bg-gray-800"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                disabled={savingShares}
+                onClick={() => void handleSaveShareSettings()}
+                className="px-4 py-1.5 rounded-lg text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white font-medium"
+              >
+                {savingShares ? '保存中...' : '保存共享设置'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 导入笔记确认弹窗 */}
       {importModal.isOpen && (
